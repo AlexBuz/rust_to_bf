@@ -37,9 +37,11 @@ pub enum Instruction {
         src: Value,
         store_mode: StoreMode,
     },
-    // TODO: perhaps create separate instructions for GrowStack and ShrinkStack
-    ResizeStack {
-        amount: isize,
+    GrowStack {
+        amount: usize,
+    },
+    ShrinkStack {
+        amount: usize,
     },
     While {
         cond: Place,
@@ -105,7 +107,7 @@ pub mod example_programs {
     pub fn fibonacci() -> Program {
         Program {
             instructions: vec![
-                ResizeStack { amount: 5 },
+                GrowStack { amount: 5 },
                 Move {
                     dst: Direct(Stack { offset: -1 }),
                     src: Immediate(0), // a

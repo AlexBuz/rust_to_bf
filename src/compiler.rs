@@ -214,17 +214,17 @@ fn compile_func<'a>(func: &'a ast::Function, frags: &mut Fragments<'a>) -> usize
     let mut vars = vec![];
     for decl in &func.params {
         vars.push(Var { decl, stack_offset });
-        stack_offset += 1;
+        stack_offset -= 1;
     }
 
     let mut instructions = compile_block(
         &func.body,
         vec![
-            ir::Instruction::ResizeStack {
+            ir::Instruction::ShrinkStack {
                 // remove the call address
-                amount: -1,
+                amount: 1,
             },
-            ir::Instruction::ResizeStack {
+            ir::Instruction::GrowStack {
                 // placeholder until we know how much space we actually need
                 amount: 0,
             },
@@ -235,20 +235,18 @@ fn compile_func<'a>(func: &'a ast::Function, frags: &mut Fragments<'a>) -> usize
 
     // TODO: do this at the block-level, not the function-level:
     {
+        let amount = -(stack_offset + 1) as usize;
+
         // make space for parameters and local variables
-        instructions[1] = ir::Instruction::ResizeStack {
-            amount: -stack_offset - 1,
-        };
+        instructions[1] = ir::Instruction::GrowStack { amount };
 
         // pop local variables
-        instructions.push(ir::Instruction::ResizeStack {
-            amount: stack_offset + 1,
-        });
+        instructions.push(ir::Instruction::ShrinkStack { amount });
     }
 
     // jump to the exit fragment
     instructions.extend([
-        ir::Instruction::ResizeStack { amount: 1 },
+        ir::Instruction::GrowStack { amount: 1 },
         ir::Instruction::Move {
             dst: ir::Place::Direct(ir::DirectPlace::Stack { offset: -1 }),
             src: ir::Value::Immediate(0),
@@ -285,7 +283,7 @@ pub fn compile(ast: ast::Ast) -> ir::Program {
 
     ir::Program {
         instructions: vec![
-            ir::Instruction::ResizeStack { amount: 1 },
+            ir::Instruction::GrowStack { amount: 1 },
             ir::Instruction::Move {
                 dst: ir::Place::Direct(ir::DirectPlace::Stack { offset: 0 }),
                 src: ir::Value::Immediate(main_func_id),
@@ -300,7 +298,7 @@ pub fn compile(ast: ast::Ast) -> ir::Program {
                     default: vec![],
                 }],
             },
-            ir::Instruction::ResizeStack { amount: -1 },
+            ir::Instruction::ShrinkStack { amount: 1 },
         ],
     }
 }

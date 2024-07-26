@@ -235,15 +235,17 @@ impl Instruction {
                     }
                 }
             }
-            ResizeStack { amount } => {
-                let abs_amount = amount.unsigned_abs();
-                if amount.is_positive() {
+            GrowStack { amount } => {
+                if amount > 0 {
                     output.push_str("6>[6>]+");
-                    output.push_str(&"6>+".repeat(abs_amount - 1));
+                    output.push_str(&"6>+".repeat(amount - 1));
                     output.push_str("[6<]");
-                } else if amount.is_negative() {
+                }
+            }
+            ShrinkStack { amount } => {
+                if amount > 0 {
                     output.push_str("6>[6>]6<");
-                    output.push_str(&"-<<[-]4<".repeat(abs_amount));
+                    output.push_str(&"-<<[-]4<".repeat(amount));
                     output.push_str("[6<]");
                 }
             }
