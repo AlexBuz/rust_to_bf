@@ -28,13 +28,8 @@ Memory layout: [
 impl DirectPlace {
     pub fn path_to_and_from(&self) -> (String, Cow<'static, str>) {
         match self {
-            Stack { offset } => {
-                let abs_offset = offset.unsigned_abs();
-                let sb_to_place = if offset.is_negative() {
-                    format!("6>[6>]<<{}", "6<".repeat(abs_offset))
-                } else {
-                    format!("4>{}", "6>".repeat(abs_offset))
-                };
+            StackTop { offset } => {
+                let sb_to_place = format!("6>[6>]<<{}", "6<".repeat(offset + 1));
                 let place_to_sb = "4<[6<]";
                 (sb_to_place, Cow::Borrowed(place_to_sb))
             }
@@ -343,8 +338,73 @@ impl Instruction {
     }
 }
 
+fn execute_bf(bf_code: &str) -> Vec<usize> {
+    let mut tape = vec![0];
+    let mut ptr = 0;
+    let mut i = 0;
+    let mut stdout = std::io::stdout().lock();
+    let mut stdin = std::io::stdin().lock();
+    let mut executed_count = 0;
+    while i < bf_code.len() {
+        executed_count += 1;
+        match bf_code.chars().nth(i).unwrap() {
+            '>' => {
+                ptr += 1;
+                if ptr == tape.len() {
+                    tape.push(0);
+                }
+            }
+            '<' => ptr -= 1,
+            '+' => tape[ptr] += 1,
+            '-' => tape[ptr] -= 1,
+            '.' => {
+                stdout.write_all(&[tape[ptr] as u8]).unwrap();
+                stdout.flush().unwrap();
+            }
+            ',' => {
+                let mut buf = [0u8];
+                stdin.read_exact(&mut buf).unwrap();
+                tape[ptr] = usize::from(buf[0]);
+            }
+            '[' => {
+                if tape[ptr] == 0 {
+                    let mut depth = 1;
+                    while depth > 0 {
+                        i += 1;
+                        match bf_code.chars().nth(i).unwrap() {
+                            '[' => depth += 1,
+                            ']' => depth -= 1,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            ']' => {
+                if tape[ptr] != 0 {
+                    let mut depth = 1;
+                    while depth > 0 {
+                        i -= 1;
+                        match bf_code.chars().nth(i).unwrap() {
+                            '[' => depth -= 1,
+                            ']' => depth += 1,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+        // if executed_count == 530000 {
+        //     break;
+        // }
+    }
+    println!("# of instructions executed: {}", executed_count);
+    tape
+}
+
 impl Program {
-    fn convert_to_bf(&self) -> String {
+    pub fn convert_to_bf(&self) -> String {
         let mut output = String::new();
         for instr in &self.instructions {
             instr.convert_to_bf(&mut output);
@@ -357,80 +417,22 @@ impl Program {
         output
     }
 
-    pub fn execute(&self) -> MemoryState {
+    pub fn execute_through_bf(&self) -> MemoryState {
         let bf_code = self.convert_to_bf();
         println!("{}", bf_code);
-        let mut tape = vec![0u8; 1];
-        let mut ptr = 0;
-        let mut i = 0;
-        let mut stdout = std::io::stdout().lock();
-        let mut stdin = std::io::stdin().lock();
-        let mut executed_count = 0;
-        while i < bf_code.len() {
-            executed_count += 1;
-            match bf_code.chars().nth(i).unwrap() {
-                '>' => {
-                    ptr += 1;
-                    if ptr == tape.len() {
-                        tape.push(0);
-                    }
-                }
-                '<' => ptr -= 1,
-                '+' => tape[ptr] += 1,
-                '-' => tape[ptr] -= 1,
-                '.' => {
-                    stdout.write_all(&[tape[ptr]]).unwrap();
-                    stdout.flush().unwrap();
-                }
-                ',' => {
-                    stdin.read_exact(&mut tape[ptr..=ptr]).unwrap();
-                }
-                '[' => {
-                    if tape[ptr] == 0 {
-                        let mut depth = 1;
-                        while depth > 0 {
-                            i += 1;
-                            match bf_code.chars().nth(i).unwrap() {
-                                '[' => depth += 1,
-                                ']' => depth -= 1,
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-                ']' => {
-                    if tape[ptr] != 0 {
-                        let mut depth = 1;
-                        while depth > 0 {
-                            i -= 1;
-                            match bf_code.chars().nth(i).unwrap() {
-                                '[' => depth -= 1,
-                                ']' => depth += 1,
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-            if executed_count == 530000 {
-                break;
-            }
-        }
-        println!("# of instructions executed: {}", executed_count);
+        let mut tape = execute_bf(&bf_code);
         while tape.len() % 6 != 2 {
             tape.push(0);
         }
-        let mut stack = Vec::<u8>::new();
-        let mut heap = Vec::<u8>::new();
+        let mut stack = Vec::<usize>::new();
+        let mut heap = Vec::<usize>::new();
         for chunk in tape[2..].chunks(6) {
             let (reg_i, temp_i, stack_i, heap_i, stack_active_i, heap_active_i) =
                 (chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5]);
             if stack_active_i != 0 {
-                stack.push(stack_i);
+                stack.push(usize::from(stack_i));
             }
-            heap.push(heap_i);
+            heap.push(usize::from(heap_i));
             // assert_eq!(heap_active_i, 0);
             // assert_eq!(reg_i, 0);
             // assert_eq!(temp_i, 0);

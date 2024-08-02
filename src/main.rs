@@ -9,11 +9,11 @@ fn main() {
     // println!("{final_state}");
     let usage = "Run `cargo run -- <path-to-source-file>`";
     let src = std::fs::read_to_string(std::env::args().nth(1).expect(usage)).expect(usage);
-    dbg!(&src);
+    // dbg!(&src);
 
     match ast::Ast::parse(&src) {
         Ok(ast) => {
-            println!("{:#?}", ast);
+            // println!("{:#?}", ast);
             let program = compiler::compile(ast);
             println!("{:#?}", program);
             let final_state = program.execute();
