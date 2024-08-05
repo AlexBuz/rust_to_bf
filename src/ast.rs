@@ -56,6 +56,8 @@ pub enum Statement {
         cond: Place, // TODO: Generalize to Expr
         body: Vec<Statement>,
     },
+    Break,
+    Continue,
     IfElse {
         cond: Expr,
         main_body: Vec<Statement>,
