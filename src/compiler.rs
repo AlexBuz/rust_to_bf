@@ -8,27 +8,26 @@ struct Var<'a> {
     frame_offset: usize,
 }
 
-fn compile_var_access(vars: &Vars, target_name: &str, mutating: bool) -> ir::DirectPlace {
+fn compile_var_access(scope: &Scope, name: &str, mutating: bool) -> ir::DirectPlace {
     ir::DirectPlace::StackTop {
-        offset: vars
+        offset: scope
             .vars
             .iter()
             .rev()
             .find_map(|var| {
-                let ast::VarDecl { name, mutable } = var.decl;
-                if target_name != name {
+                if name != var.decl.name {
                     return None;
                 }
-                if mutating && !mutable {
+                if mutating && !var.decl.mutable {
                     panic!("Variable `{name}` is not mutable.");
                 }
-                Some(vars.frame_offset - var.frame_offset - 1)
+                Some(scope.frame_offset - var.frame_offset - 1)
             })
-            .unwrap_or_else(|| panic!("Variable `{target_name}` not found.")),
+            .unwrap_or_else(|| panic!("Variable `{name}` not found.")),
     }
 }
 
-fn compile_place(place: &ast::Place, vars: &Vars, mutating: bool) -> ir::Place {
+fn compile_place(place: &ast::Place, vars: &Scope, mutating: bool) -> ir::Place {
     match place {
         ast::Place::Var(name) => ir::Place::Direct(compile_var_access(vars, name, mutating)),
         ast::Place::Deref(name) => ir::Place::Indirect(ir::IndirectPlace::Heap {
@@ -37,11 +36,11 @@ fn compile_place(place: &ast::Place, vars: &Vars, mutating: bool) -> ir::Place {
     }
 }
 
-fn compile_expr(expr: &ast::Expr, vars: &Vars) -> ir::Value {
+fn compile_expr(expr: &ast::Expr, scope: &mut Scope, cur_frag: &mut FragId) -> ir::Value {
     match expr {
         ast::Expr::Simple(ast::SimpleExpr::Int(i)) => ir::Value::Immediate(*i),
         ast::Expr::Simple(ast::SimpleExpr::Place(place)) => {
-            ir::Value::Deref(compile_place(place, vars, false))
+            ir::Value::Deref(compile_place(place, scope, false))
         }
         ast::Expr::Call { func, args } => {
             // ir::Instruction::GrowStack {
@@ -70,16 +69,41 @@ fn compile_store_mode(mode: ast::AssignMode) -> ir::StoreMode {
     }
 }
 
-struct Vars<'a> {
-    vars: Vec<Var<'a>>,
-    frame_offset: usize,
+// TODO: rename these fields to be more descriptive, e.g., `code` -> `basic_blocks`
+struct GlobalState<'a> {
+    code: Vec<Vec<ir::Instruction>>,
+    func_ids: BTreeMap<&'a str, usize>,
+    functions: BTreeMap<&'a str, &'a ast::Function>,
 }
 
-impl<'a> Vars<'a> {
-    fn new() -> Self {
+impl<'a> GlobalState<'a> {
+    fn new(functions: BTreeMap<&'a str, &'a ast::Function>) -> Self {
+        Self {
+            code: vec![vec![]], // frag 0 is the exit psuedo-fragment (it never actually gets executed due to the while loop)
+            func_ids: BTreeMap::from([("exit", 0)]),
+            functions,
+        }
+    }
+
+    fn add(&mut self, instructions: Vec<ir::Instruction>) -> FragId {
+        let frag_id = self.code.len();
+        self.code.push(instructions);
+        frag_id
+    }
+}
+
+struct Scope<'a, 'b> {
+    vars: Vec<Var<'a>>,
+    frame_offset: usize,
+    global: &'b mut GlobalState<'a>,
+}
+
+impl<'a, 'b> Scope<'a, 'b> {
+    fn new(global: &'b mut GlobalState<'a>) -> Self {
         Self {
             vars: vec![],
             frame_offset: 0,
+            global,
         }
     }
 
@@ -118,29 +142,31 @@ type FragId = usize;
 fn compile_block<'a>(
     statements: &'a [ast::Statement],
     instructions: Vec<ir::Instruction>, // start with some instructions, if desired
-    frags: &mut Fragments<'a>,
+    scope: &mut Scope<'a, '_>,
     final_frame_size: usize,
-    vars: &mut Vars<'a>,
 ) -> (FragId, FragId) {
-    let frag_start = frags.add(instructions);
-    let mut frag_end = frag_start;
+    let frag_start = scope.global.add(instructions);
+    let mut frag_cur = frag_start;
     for statement in statements {
         match statement {
             ast::Statement::Let { decl, value } => {
-                frags.code[frag_end].extend([
+                let src = compile_expr(value, scope, &mut frag_cur);
+                scope.global.code[frag_cur].extend([
                     ir::Instruction::GrowStack { amount: 1 },
                     ir::Instruction::Move {
                         dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
-                        src: compile_expr(value, vars),
+                        src,
                         store_mode: ir::StoreMode::Add,
                     },
                 ]);
-                vars.push(decl);
+                scope.push(decl);
             }
             ast::Statement::Assign { place, value, mode } => {
-                frags.code[frag_end].push(ir::Instruction::Move {
-                    dst: compile_place(place, vars, true),
-                    src: compile_expr(value, vars),
+                let src = compile_expr(value, scope, &mut frag_cur);
+                let dst = compile_place(place, scope, true);
+                scope.global.code[frag_cur].push(ir::Instruction::Move {
+                    dst,
+                    src,
                     store_mode: compile_store_mode(*mode),
                 });
             }
@@ -164,24 +190,26 @@ fn compile_block<'a>(
                 //     cond: compile_place(cond, vars, false),
                 //     body: compile_block(body, vec![], frags, vars.frame_offset, vars),
                 // });
-                vars.frame_offset += 2;
-                let cond = compile_place(cond, vars, false);
+                scope.frame_offset += 2;
+                let cond = compile_place(cond, scope, false);
 
-                let (loop_start, loop_end) =
-                    compile_block(body, vec![], frags, vars.frame_offset, vars);
+                let (loop_start, _loop_end) =
+                    compile_block(body, vec![], scope, scope.frame_offset);
 
-                let loop_body = std::mem::take(&mut frags.code[loop_start]);
-                frags.code[loop_start].push(ir::Instruction::Switch {
+                let loop_body = std::mem::take(&mut scope.global.code[loop_start]);
+                scope.global.code[loop_start].push(ir::Instruction::Switch {
                     cond,
                     cases: vec![vec![ir::Instruction::ShrinkStack { amount: 1 }]],
                     default: loop_body,
                 });
 
-                let old_frag_end = frag_end;
-                frag_end = frags.add(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
-                vars.frame_offset -= 2;
+                let frag_old = frag_cur;
+                frag_cur = scope
+                    .global
+                    .add(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
+                scope.frame_offset -= 2;
 
-                frags.code[old_frag_end].extend([
+                scope.global.code[frag_old].extend([
                     ir::Instruction::GrowStack { amount: 2 },
                     ir::Instruction::Move {
                         dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
@@ -190,43 +218,42 @@ fn compile_block<'a>(
                     },
                     ir::Instruction::Move {
                         dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 1 }),
-                        src: ir::Value::Immediate(frag_end),
+                        src: ir::Value::Immediate(frag_cur),
                         store_mode: ir::StoreMode::Add,
                     },
                 ]);
             }
             ast::Statement::Break => {
-                vars.truncate(final_frame_size);
-                frags.code[frag_end].push(ir::Instruction::ShrinkStack {
-                    amount: 1 + vars.frame_offset - final_frame_size,
+                scope.truncate(final_frame_size);
+                scope.global.code[frag_cur].push(ir::Instruction::ShrinkStack {
+                    amount: 1 + scope.frame_offset - final_frame_size,
                 });
-                return (frag_start, frag_end);
+                return (frag_start, frag_cur);
             }
             &ast::Statement::Continue => {
-                vars.truncate(final_frame_size);
-                frags.code[frag_end].push(ir::Instruction::ShrinkStack {
-                    amount: vars.frame_offset - final_frame_size,
+                scope.truncate(final_frame_size);
+                scope.global.code[frag_cur].push(ir::Instruction::ShrinkStack {
+                    amount: scope.frame_offset - final_frame_size,
                 });
-                return (frag_start, frag_end);
+                return (frag_start, frag_cur);
             }
             ast::Statement::IfElse {
                 cond,
                 main_body,
                 else_body,
             } => {
-                match compile_expr(cond, vars) {
+                match compile_expr(cond, scope, &mut frag_cur) {
                     ir::Value::Deref(place) => {
                         let [(main_start, main_end), (else_start, else_end)] =
                             [main_body, else_body].map(|body| {
                                 compile_block(
                                     body,
                                     vec![ir::Instruction::ShrinkStack { amount: 1 }],
-                                    frags,
-                                    vars.frame_offset,
-                                    vars,
+                                    scope,
+                                    scope.frame_offset,
                                 )
                             });
-                        frags.code[frag_end].extend([ir::Instruction::Switch {
+                        scope.global.code[frag_cur].extend([ir::Instruction::Switch {
                             cond: place,
                             cases: vec![vec![
                                 ir::Instruction::GrowStack { amount: 1 },
@@ -245,13 +272,15 @@ fn compile_block<'a>(
                                 },
                             ],
                         }]);
-                        frag_end = frags.add(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
+                        frag_cur = scope
+                            .global
+                            .add(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
                         for frag in [main_end, else_end] {
-                            frags.code[frag].extend([
+                            scope.global.code[frag].extend([
                                 ir::Instruction::GrowStack { amount: 1 },
                                 ir::Instruction::Move {
                                     dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
-                                    src: ir::Value::Immediate(frag_end),
+                                    src: ir::Value::Immediate(frag_cur),
                                     store_mode: ir::StoreMode::Add,
                                 },
                             ]);
@@ -261,11 +290,10 @@ fn compile_block<'a>(
                         let (block_start, block_end) = compile_block(
                             if value != 0 { main_body } else { else_body },
                             vec![ir::Instruction::ShrinkStack { amount: 1 }],
-                            frags,
-                            vars.frame_offset,
-                            vars,
+                            scope,
+                            scope.frame_offset,
                         );
-                        frags.code[frag_end].extend([
+                        scope.global.code[frag_cur].extend([
                             ir::Instruction::GrowStack { amount: 1 },
                             ir::Instruction::Move {
                                 dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
@@ -273,7 +301,7 @@ fn compile_block<'a>(
                                 store_mode: ir::StoreMode::Add,
                             },
                         ]);
-                        frag_end = block_end;
+                        frag_cur = block_end;
                     }
                 };
             }
@@ -295,11 +323,10 @@ fn compile_block<'a>(
                     let (block_start, block_end) = compile_block(
                         default,
                         vec![ir::Instruction::ShrinkStack { amount: 1 }],
-                        frags,
-                        vars.frame_offset,
-                        vars,
+                        scope,
+                        scope.frame_offset,
                     );
-                    frags.code[frag_end].extend([
+                    scope.global.code[frag_cur].extend([
                         ir::Instruction::GrowStack { amount: 1 },
                         ir::Instruction::Move {
                             dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
@@ -307,31 +334,29 @@ fn compile_block<'a>(
                             store_mode: ir::StoreMode::Add,
                         },
                     ]);
-                    frag_end = block_end;
+                    frag_cur = block_end;
                     continue;
                 };
 
-                match compile_expr(cond, vars) {
+                match compile_expr(cond, scope, &mut frag_cur) {
                     ir::Value::Deref(place) => {
                         let case_frags = (0..=last_case)
                             .map(|value| {
                                 compile_block(
                                     case_map.get(&value).copied().unwrap_or(default.as_slice()),
                                     vec![ir::Instruction::ShrinkStack { amount: 1 }],
-                                    frags,
-                                    vars.frame_offset,
-                                    vars,
+                                    scope,
+                                    scope.frame_offset,
                                 )
                             })
                             .collect::<Vec<_>>();
                         let default_frag = compile_block(
                             default,
                             vec![ir::Instruction::ShrinkStack { amount: 1 }],
-                            frags,
-                            vars.frame_offset,
-                            vars,
+                            scope,
+                            scope.frame_offset,
                         );
-                        frags.code[frag_end].extend([ir::Instruction::Switch {
+                        scope.global.code[frag_cur].extend([ir::Instruction::Switch {
                             cond: place,
                             cases: case_frags
                                 .iter()
@@ -357,13 +382,15 @@ fn compile_block<'a>(
                                 },
                             ],
                         }]);
-                        frag_end = frags.add(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
+                        frag_cur = scope
+                            .global
+                            .add(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
                         for (_, end) in case_frags {
-                            frags.code[end].extend([
+                            scope.global.code[end].extend([
                                 ir::Instruction::GrowStack { amount: 1 },
                                 ir::Instruction::Move {
                                     dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
-                                    src: ir::Value::Immediate(frag_end),
+                                    src: ir::Value::Immediate(frag_cur),
                                     store_mode: ir::StoreMode::Add,
                                 },
                             ]);
@@ -373,11 +400,10 @@ fn compile_block<'a>(
                         let (block_start, block_end) = compile_block(
                             case_map.get(&value).copied().unwrap_or(default.as_slice()),
                             vec![ir::Instruction::ShrinkStack { amount: 1 }],
-                            frags,
-                            vars.frame_offset,
-                            vars,
+                            scope,
+                            scope.frame_offset,
                         );
-                        frags.code[frag_end].extend([
+                        scope.global.code[frag_cur].extend([
                             ir::Instruction::GrowStack { amount: 1 },
                             ir::Instruction::Move {
                                 dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
@@ -385,7 +411,7 @@ fn compile_block<'a>(
                                 store_mode: ir::StoreMode::Add,
                             },
                         ]);
-                        frag_end = block_end;
+                        frag_cur = block_end;
                     }
                 };
             }
@@ -393,11 +419,10 @@ fn compile_block<'a>(
                 let (block_start, block_end) = compile_block(
                     body,
                     vec![ir::Instruction::ShrinkStack { amount: 1 }],
-                    frags,
-                    vars.frame_offset,
-                    vars,
+                    scope,
+                    scope.frame_offset,
                 );
-                frags.code[frag_end].extend([
+                scope.global.code[frag_cur].extend([
                     ir::Instruction::GrowStack { amount: 1 },
                     ir::Instruction::Move {
                         dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
@@ -405,62 +430,49 @@ fn compile_block<'a>(
                         store_mode: ir::StoreMode::Add,
                     },
                 ]);
-                frag_end = block_end;
+                frag_cur = block_end;
             }
             ast::Statement::Return(value) => {
-                frags.code[frag_end].extend([
+                let src = compile_expr(value, scope, &mut frag_cur);
+                scope.global.code[frag_cur].extend([
                     ir::Instruction::ShrinkStack {
-                        amount: vars.frame_offset,
+                        amount: scope.frame_offset,
                     },
                     ir::Instruction::Move {
                         dst: ir::Place::Direct(ir::DirectPlace::StackTop {
-                            offset: vars.frame_offset + 1,
+                            offset: scope.frame_offset + 1,
                         }),
-                        src: compile_expr(value, vars),
+                        src,
                         store_mode: ir::StoreMode::Replace,
                     },
                 ]);
-                vars.truncate(final_frame_size);
-                frag_end = 0;
+                scope.truncate(final_frame_size);
+                frag_cur = 0;
             }
         }
     }
-    vars.truncate(final_frame_size);
-    frags.code[frag_end].push(ir::Instruction::ShrinkStack {
-        amount: vars.frame_offset - final_frame_size,
+    scope.truncate(final_frame_size);
+    scope.global.code[frag_cur].push(ir::Instruction::ShrinkStack {
+        amount: scope.frame_offset - final_frame_size,
     });
-    (frag_start, frag_end)
+    (frag_start, frag_cur)
 }
 
-struct Fragments<'a> {
-    code: Vec<Vec<ir::Instruction>>,
-    func_ids: BTreeMap<&'a str, usize>,
-}
+fn compile_func(name: &str, global_state: &mut GlobalState) -> FragId {
+    let func = global_state
+        .functions
+        .get(name)
+        .copied()
+        .unwrap_or_else(|| panic!("Function `{name}` not found."));
 
-impl Fragments<'_> {
-    fn new() -> Self {
-        Self {
-            code: vec![vec![]], // frag 0 is the exit psuedo-fragment (it never actually gets executed due to the while loop)
-            func_ids: BTreeMap::from([("exit", 0)]),
-        }
-    }
-
-    fn add(&mut self, instructions: Vec<ir::Instruction>) -> FragId {
-        let frag_id = self.code.len();
-        self.code.push(instructions);
-        frag_id
-    }
-}
-
-fn compile_func<'a>(func: &'a ast::Function, frags: &mut Fragments<'a>) -> usize {
-    if let Some(&func_id) = frags.func_ids.get(func.name.as_str()) {
+    if let Some(&func_id) = global_state.func_ids.get(func.name.as_str()) {
         // function already compiled
         return func_id;
     }
 
-    let mut vars = Vars::new();
+    let mut scope = Scope::new(global_state);
     for decl in &func.params {
-        vars.push(decl);
+        scope.push(decl);
     }
 
     let (enter_frag_id, _exit_frag_id) = compile_block(
@@ -469,12 +481,14 @@ fn compile_func<'a>(func: &'a ast::Function, frags: &mut Fragments<'a>) -> usize
             // remove the call address
             amount: 1,
         }],
-        frags,
+        &mut scope,
         0,
-        &mut vars,
     );
 
-    frags.func_ids.insert(func.name.as_str(), enter_frag_id);
+    scope
+        .global
+        .func_ids
+        .insert(func.name.as_str(), enter_frag_id);
     enter_frag_id
 }
 
@@ -489,12 +503,9 @@ pub fn compile(ast: ast::Ast) -> ir::Program {
         panic!("Duplicate function names");
     }
 
-    let mut fragments = Fragments::new();
+    let mut global_state = GlobalState::new(functions);
 
-    let main_func_id = compile_func(
-        functions.get("main").expect("Function `main` not found"),
-        &mut fragments,
-    );
+    let main_func_id = compile_func("main", &mut global_state);
 
     ir::Program {
         instructions: vec![
@@ -508,7 +519,7 @@ pub fn compile(ast: ast::Ast) -> ir::Program {
                 cond: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
                 body: vec![ir::Instruction::Switch {
                     cond: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
-                    cases: fragments.code,
+                    cases: global_state.code,
                     // default should never run unless we implement dynamic dispatch and an invalid function pointer is called
                     default: vec![],
                 }],
