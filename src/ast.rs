@@ -100,7 +100,9 @@ pub struct Ast {
 impl Ast {
     pub fn parse(src: &str) -> Result<Self, Vec<Simple<char>>> {
         let parsed = ast_parser().parse(src);
-        println!("{:?}", parsed);
+        if crate::DEBUG {
+            println!("{:#?}", parsed);
+        }
         parsed
         // use Statement::*;
         // Ok(Ast {

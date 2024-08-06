@@ -190,6 +190,7 @@ impl<'a, 'b> Scope<'a, 'b> {
     }
 }
 
+// TODO: make compile_block return a struct with named fields for the start and end frag ids
 type FragId = usize;
 
 #[deny(unused_must_use)]
@@ -534,8 +535,6 @@ fn compile_func(name: &str, global_state: &mut GlobalState) -> FragId {
         .get(name)
         .copied()
         .unwrap_or_else(|| panic!("Function `{name}` not found."));
-
-    println!("Compiling function `{name}`");
 
     if let Some(&func_id) = global_state.func_ids.get(func.name.as_str()) {
         // function already compiled

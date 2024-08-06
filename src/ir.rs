@@ -155,8 +155,15 @@ pub enum Instruction {
 
 macro_rules! indent_println {
     ($depth:expr, $($arg:tt)*) => {
-        print!("{:width$}", "", width = $depth * 4);
-        println!($($arg)*);
+        if crate::DEBUG {
+            print!("{:width$}", "", width = $depth * 4);
+            println!($($arg)*);
+        }
+    };
+    () => {
+        if crate::DEBUG {
+            println!();
+        }
     };
 }
 
@@ -177,19 +184,19 @@ impl Instruction {
                     StoreMode::Subtract => *dst_place -= src_value,
                 }
                 indent_println!(depth, "stack: {:?}", state.stack);
-                println!();
+                indent_println!();
             }
             Instruction::GrowStack { amount } => {
                 indent_println!(depth, "stack.grow_by({amount});");
                 state.stack.resize(state.stack.len() + amount, 0);
                 indent_println!(depth, "stack: {:?}", state.stack);
-                println!();
+                indent_println!();
             }
             Instruction::ShrinkStack { amount } => {
                 indent_println!(depth, "stack.shrink_by({amount});");
                 state.stack.truncate(state.stack.len() - amount);
                 indent_println!(depth, "stack: {:?}", state.stack);
-                println!();
+                indent_println!();
             }
             Instruction::While { cond, body } => {
                 indent_println!(depth, "while {cond} {{");
