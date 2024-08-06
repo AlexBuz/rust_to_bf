@@ -27,37 +27,91 @@ fn compile_var_access(scope: &Scope, name: &str, mutating: bool) -> ir::DirectPl
     }
 }
 
-fn compile_place(place: &ast::Place, vars: &Scope, mutating: bool) -> ir::Place {
+fn compile_place(place: &ast::Place, scope: &Scope, mutating: bool) -> ir::Place {
     match place {
-        ast::Place::Var(name) => ir::Place::Direct(compile_var_access(vars, name, mutating)),
+        ast::Place::Var(name) => ir::Place::Direct(compile_var_access(scope, name, mutating)),
         ast::Place::Deref(name) => ir::Place::Indirect(ir::IndirectPlace::Heap {
-            address: compile_var_access(vars, name, false),
+            address: compile_var_access(scope, name, false),
         }),
     }
 }
 
+fn compile_simple_expr(expr: &ast::SimpleExpr, scope: &Scope) -> ir::Value {
+    match expr {
+        ast::SimpleExpr::Int(i) => ir::Value::Immediate(*i),
+        ast::SimpleExpr::Place(place) => ir::Value::Deref(compile_place(place, scope, false)),
+    }
+}
+
+fn compile_call(
+    func: &str,
+    args: &[ast::Expr],
+    scope: &mut Scope,
+    cur_frag: &mut FragId,
+) -> ir::Value {
+    // Stack order: [return value, return address, arguments, local variables]
+    // The caller leaves space for the return value and pushes the return address and arguments
+    // The callee is responsible for popping the arguments when returning
+    // The caller then pops the return address and uses the return value (now at the top of the stack)
+
+    scope.global.code[*cur_frag].extend([ir::Instruction::GrowStack {
+        amount: 2, // space for return value and return address
+    }]);
+    scope.frame_offset += 2;
+
+    for arg in args {
+        match arg {
+            ast::Expr::Simple(simple_expr) => {
+                scope.frame_offset += 1;
+                let src = compile_simple_expr(simple_expr, scope);
+                scope.global.code[*cur_frag].extend([
+                    ir::Instruction::GrowStack { amount: 1 },
+                    ir::Instruction::Move {
+                        dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
+                        src,
+                        store_mode: ir::StoreMode::Add,
+                    },
+                ]);
+            }
+            _ => {
+                let before_offset = scope.frame_offset;
+                compile_expr(arg, scope, cur_frag);
+                assert!(scope.frame_offset == before_offset + 1);
+            }
+        }
+    }
+
+    let call_frag = compile_func(func, scope.global);
+    let return_frag = scope
+        .global
+        .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
+
+    scope.global.code[*cur_frag].extend([
+        ir::Instruction::Move {
+            dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: args.len() }),
+            src: ir::Value::Immediate(return_frag),
+            store_mode: ir::StoreMode::Add,
+        },
+        ir::Instruction::GrowStack { amount: 1 },
+        ir::Instruction::Move {
+            dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
+            src: ir::Value::Immediate(call_frag),
+            store_mode: ir::StoreMode::Add,
+        },
+    ]);
+
+    *cur_frag = return_frag;
+
+    // keep only the return value
+    scope.frame_offset -= 1 + args.len();
+
+    ir::Value::Deref(ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }))
+}
+
 fn compile_expr(expr: &ast::Expr, scope: &mut Scope, cur_frag: &mut FragId) -> ir::Value {
     match expr {
-        ast::Expr::Simple(ast::SimpleExpr::Int(i)) => ir::Value::Immediate(*i),
-        ast::Expr::Simple(ast::SimpleExpr::Place(place)) => {
-            ir::Value::Deref(compile_place(place, scope, false))
-        }
-        ast::Expr::Call { func, args } => {
-            // ir::Instruction::GrowStack {
-            //     // make space for parameters
-            //     amount: frame_size,
-            // };
-
-            // pop the parameters
-            // instructions.push(ir::Instruction::ShrinkStack { amount: frame_size });
-
-            todo!("Call expression");
-            // Stack order: [return value, return address, arguments, local variables]
-            // The caller leaves space for the return value and pushes the return address and arguments
-            // The callee is responsible for pushing and popping local variables when returning
-            // The runtime system pops the return address and goes to the appropriate fragment
-            // The callee is responsible for popping or using the return address
-        }
+        ast::Expr::Simple(simple_expr) => compile_simple_expr(simple_expr, scope),
+        ast::Expr::Call { func, args } => compile_call(func, args, scope, cur_frag),
     }
 }
 
@@ -85,7 +139,7 @@ impl<'a> GlobalState<'a> {
         }
     }
 
-    fn add(&mut self, instructions: Vec<ir::Instruction>) -> FragId {
+    fn add_frag(&mut self, instructions: Vec<ir::Instruction>) -> FragId {
         let frag_id = self.code.len();
         self.code.push(instructions);
         frag_id
@@ -107,7 +161,7 @@ impl<'a, 'b> Scope<'a, 'b> {
         }
     }
 
-    fn push(&mut self, decl: &'a ast::VarDecl) {
+    fn add_decl(&mut self, decl: &'a ast::VarDecl) {
         self.vars.push(Var {
             decl,
             frame_offset: self.frame_offset,
@@ -132,6 +186,7 @@ impl<'a, 'b> Scope<'a, 'b> {
                 .map(|pos| self.vars.len() - pos)
                 .unwrap_or(0),
         );
+        self.frame_offset = final_frame_size;
     }
 }
 
@@ -145,21 +200,30 @@ fn compile_block<'a>(
     scope: &mut Scope<'a, '_>,
     final_frame_size: usize,
 ) -> (FragId, FragId) {
-    let frag_start = scope.global.add(instructions);
+    let frag_start = scope.global.add_frag(instructions);
     let mut frag_cur = frag_start;
     for statement in statements {
         match statement {
             ast::Statement::Let { decl, value } => {
-                let src = compile_expr(value, scope, &mut frag_cur);
-                scope.global.code[frag_cur].extend([
-                    ir::Instruction::GrowStack { amount: 1 },
-                    ir::Instruction::Move {
-                        dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
-                        src,
-                        store_mode: ir::StoreMode::Add,
-                    },
-                ]);
-                scope.push(decl);
+                match value {
+                    ast::Expr::Simple(simple_expr) => {
+                        scope.frame_offset += 1;
+                        let src = compile_simple_expr(simple_expr, scope);
+                        scope.global.code[frag_cur].extend([
+                            ir::Instruction::GrowStack { amount: 1 },
+                            ir::Instruction::Move {
+                                dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
+                                src,
+                                store_mode: ir::StoreMode::Add,
+                            },
+                        ]);
+                    }
+                    ast::Expr::Call { func, args } => {
+                        compile_call(func, args, scope, &mut frag_cur);
+                    }
+                }
+                scope.frame_offset -= 1;
+                scope.add_decl(decl);
             }
             ast::Statement::Assign { place, value, mode } => {
                 let src = compile_expr(value, scope, &mut frag_cur);
@@ -186,10 +250,16 @@ fn compile_block<'a>(
                 // instructions.push(ir::Instruction::While { cond, body });
             }
             ast::Statement::While { cond, body } => {
+                // TODO: use simpler codegen when possible (i.e., when there are no jumps)
                 // instructions.push(ir::Instruction::While {
                 //     cond: compile_place(cond, vars, false),
                 //     body: compile_block(body, vec![], frags, vars.frame_offset, vars),
                 // });
+                let cond = match cond {
+                    ast::Expr::Simple(ast::SimpleExpr::Place(place)) => place,
+                    _ => todo!("Non-place condition in while loop"),
+                };
+
                 scope.frame_offset += 2;
                 let cond = compile_place(cond, scope, false);
 
@@ -206,7 +276,7 @@ fn compile_block<'a>(
                 let frag_old = frag_cur;
                 frag_cur = scope
                     .global
-                    .add(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
+                    .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
                 scope.frame_offset -= 2;
 
                 scope.global.code[frag_old].extend([
@@ -274,7 +344,7 @@ fn compile_block<'a>(
                         }]);
                         frag_cur = scope
                             .global
-                            .add(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
+                            .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
                         for frag in [main_end, else_end] {
                             scope.global.code[frag].extend([
                                 ir::Instruction::GrowStack { amount: 1 },
@@ -384,7 +454,7 @@ fn compile_block<'a>(
                         }]);
                         frag_cur = scope
                             .global
-                            .add(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
+                            .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
                         for (_, end) in case_frags {
                             scope.global.code[end].extend([
                                 ir::Instruction::GrowStack { amount: 1 },
@@ -435,15 +505,15 @@ fn compile_block<'a>(
             ast::Statement::Return(value) => {
                 let src = compile_expr(value, scope, &mut frag_cur);
                 scope.global.code[frag_cur].extend([
-                    ir::Instruction::ShrinkStack {
-                        amount: scope.frame_offset,
-                    },
                     ir::Instruction::Move {
                         dst: ir::Place::Direct(ir::DirectPlace::StackTop {
                             offset: scope.frame_offset + 1,
                         }),
                         src,
-                        store_mode: ir::StoreMode::Replace,
+                        store_mode: ir::StoreMode::Add,
+                    },
+                    ir::Instruction::ShrinkStack {
+                        amount: scope.frame_offset,
                     },
                 ]);
                 scope.truncate(final_frame_size);
@@ -451,10 +521,10 @@ fn compile_block<'a>(
             }
         }
     }
-    scope.truncate(final_frame_size);
     scope.global.code[frag_cur].push(ir::Instruction::ShrinkStack {
         amount: scope.frame_offset - final_frame_size,
     });
+    scope.truncate(final_frame_size);
     (frag_start, frag_cur)
 }
 
@@ -465,17 +535,24 @@ fn compile_func(name: &str, global_state: &mut GlobalState) -> FragId {
         .copied()
         .unwrap_or_else(|| panic!("Function `{name}` not found."));
 
+    println!("Compiling function `{name}`");
+
     if let Some(&func_id) = global_state.func_ids.get(func.name.as_str()) {
         // function already compiled
         return func_id;
     }
 
+    let enter_frag_id = global_state.code.len();
+    global_state
+        .func_ids
+        .insert(func.name.as_str(), enter_frag_id);
+
     let mut scope = Scope::new(global_state);
     for decl in &func.params {
-        scope.push(decl);
+        scope.add_decl(decl);
     }
 
-    let (enter_frag_id, _exit_frag_id) = compile_block(
+    let (_enter_frag_id, _exit_frag_id) = compile_block(
         &func.body,
         vec![ir::Instruction::ShrinkStack {
             // remove the call address
@@ -485,10 +562,8 @@ fn compile_func(name: &str, global_state: &mut GlobalState) -> FragId {
         0,
     );
 
-    scope
-        .global
-        .func_ids
-        .insert(func.name.as_str(), enter_frag_id);
+    assert!(enter_frag_id == _enter_frag_id);
+
     enter_frag_id
 }
 

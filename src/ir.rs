@@ -176,14 +176,20 @@ impl Instruction {
                     StoreMode::Add => *dst_place += src_value,
                     StoreMode::Subtract => *dst_place -= src_value,
                 }
+                indent_println!(depth, "stack: {:?}", state.stack);
+                println!();
             }
             Instruction::GrowStack { amount } => {
                 indent_println!(depth, "stack.grow_by({amount});");
                 state.stack.resize(state.stack.len() + amount, 0);
+                indent_println!(depth, "stack: {:?}", state.stack);
+                println!();
             }
             Instruction::ShrinkStack { amount } => {
                 indent_println!(depth, "stack.shrink_by({amount});");
                 state.stack.truncate(state.stack.len() - amount);
+                indent_println!(depth, "stack: {:?}", state.stack);
+                println!();
             }
             Instruction::While { cond, body } => {
                 indent_println!(depth, "while {cond} {{");
@@ -267,8 +273,8 @@ pub struct MemoryState {
 
 impl std::fmt::Display for MemoryState {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        writeln!(f, "Stack: {:?}", self.stack)?;
-        write!(f, "Heap: {:?}", self.heap)?;
+        writeln!(f, "stack: {:?}", self.stack)?;
+        write!(f, "heap: {:?}", self.heap)?;
         Ok(())
     }
 }
