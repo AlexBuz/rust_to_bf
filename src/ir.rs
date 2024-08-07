@@ -1,4 +1,4 @@
-use crate::macros::indented_println;
+use crate::macros::{indented_print, indented_println};
 use std::io::{Read, Write};
 
 #[derive(Debug, Clone, Copy)]
@@ -165,20 +165,14 @@ impl Instruction {
                     StoreMode::Add => *dst_place += src_value,
                     StoreMode::Subtract => *dst_place -= src_value,
                 }
-                indented_println!(depth, "stack: {:?}", state.stack);
-                indented_println!();
             }
             Instruction::GrowStack { amount } => {
                 indented_println!(depth, "stack.grow_by({amount});");
                 state.stack.resize(state.stack.len() + amount, 0);
-                indented_println!(depth, "stack: {:?}", state.stack);
-                indented_println!();
             }
             Instruction::ShrinkStack { amount } => {
                 indented_println!(depth, "stack.shrink_by({amount});");
                 state.stack.truncate(state.stack.len() - amount);
-                indented_println!(depth, "stack: {:?}", state.stack);
-                indented_println!();
             }
             Instruction::While { cond, body } => {
                 indented_println!(depth, "while {cond} {{");
@@ -221,17 +215,25 @@ impl Instruction {
                 indented_println!(depth, "}}");
             }
             Instruction::Input { dst } => {
+                indented_print!(depth, "{dst} = getchar(); // ");
+                std::io::stdout().flush().unwrap();
                 let mut stdin = std::io::stdin().lock();
                 let mut buf = [0u8];
                 stdin.read_exact(&mut buf).unwrap();
                 *dst.resolve(state) = usize::from(buf[0]);
             }
             Instruction::Output { src } => {
+                indented_print!(depth, "putchar({src}); // ");
                 let mut stdout = std::io::stdout().lock();
+                stdout.flush().unwrap();
                 stdout.write_all(&[src.resolve(state) as u8]).unwrap();
                 stdout.flush().unwrap();
+                indented_println!();
             }
         }
+        indented_println!(depth, "stack: {:?}", state.stack);
+        indented_println!(depth, "heap: {:?}", state.heap);
+        indented_println!();
     }
 }
 
