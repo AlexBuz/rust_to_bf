@@ -286,6 +286,7 @@ impl std::fmt::Display for MemoryState {
     }
 }
 
+#[allow(unused)]
 pub mod example_programs {
     use super::*;
     use DirectPlace::*;

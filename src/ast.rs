@@ -21,8 +21,7 @@ pub enum SimpleExpr {
 #[derive(Debug, Clone)]
 pub enum Expr {
     Simple(SimpleExpr),
-    // TODO: Instead of taking an Ident, take an Expr to allow for dynamic dispatch.
-    // TODO: Generalize args to Vec<Expr>
+    // TODO: Instead of an Ident for the func, take an Expr to allow for dynamic dispatch.
     Call { func: Ident, args: Vec<Expr> },
 }
 
@@ -53,17 +52,8 @@ pub enum Statement {
     Loop {
         body: Vec<Statement>,
     },
-    While {
-        cond: Expr,
-        body: Vec<Statement>,
-    },
-    Break,
     Continue,
-    IfElse {
-        cond: Expr,
-        main_body: Vec<Statement>,
-        else_body: Vec<Statement>,
-    },
+    Break,
     Switch {
         cond: Expr,
         cases: Vec<(usize, Vec<Statement>)>,
@@ -104,166 +94,6 @@ impl Ast {
             println!("{:#?}", parsed);
         }
         parsed
-        // use Statement::*;
-        // Ok(Ast {
-        //     functions: vec![Function {
-        //         name: "main".to_string(),
-        //         params: vec![],
-        //         body: vec![
-        //             Let {
-        //                 decl: VarDecl {
-        //                     mutable: true,
-        //                     name: "a".to_string(),
-        //                 },
-        //                 value: Expr::Simple(SimpleExpr::Int(0)),
-        //             },
-        //             Let {
-        //                 decl: VarDecl {
-        //                     mutable: true,
-        //                     name: "b".to_string(),
-        //                 },
-        //                 value: Expr::Simple(SimpleExpr::Int(1)),
-        //             },
-        //             Let {
-        //                 decl: VarDecl {
-        //                     mutable: true,
-        //                     name: "temp".to_string(),
-        //                 },
-        //                 value: Expr::Simple(SimpleExpr::Int(0)),
-        //             },
-        //             Let {
-        //                 decl: VarDecl {
-        //                     mutable: true,
-        //                     name: "iterations".to_string(),
-        //                 },
-        //                 value: Expr::Simple(SimpleExpr::Int(12)),
-        //             },
-        //             Let {
-        //                 decl: VarDecl {
-        //                     mutable: true,
-        //                     name: "ptr".to_string(),
-        //                 },
-        //                 value: Expr::Simple(SimpleExpr::Int(0)),
-        //             },
-        //             While {
-        //                 cond: Place::Var("iterations".to_string()),
-        //                 body: vec![
-        //                     Assign {
-        //                         place: Place::Var("temp".to_string()),
-        //                         value: Expr::Simple(SimpleExpr::Place(Place::Var("b".to_string()))),
-        //                         mode: AssignMode::Replace,
-        //                     },
-        //                     Assign {
-        //                         place: Place::Var("b".to_string()),
-        //                         value: Expr::Simple(SimpleExpr::Place(Place::Var("a".to_string()))),
-        //                         mode: AssignMode::Add,
-        //                     },
-        //                     Assign {
-        //                         place: Place::Var("a".to_string()),
-        //                         value: Expr::Simple(SimpleExpr::Place(Place::Var(
-        //                             "temp".to_string(),
-        //                         ))),
-        //                         mode: AssignMode::Replace,
-        //                     },
-        //                     Assign {
-        //                         place: Place::Var("iterations".to_string()),
-        //                         value: Expr::Simple(SimpleExpr::Int(1)),
-        //                         mode: AssignMode::Subtract,
-        //                     },
-        //                     Assign {
-        //                         place: Place::Deref("ptr".to_string()),
-        //                         value: Expr::Simple(SimpleExpr::Place(Place::Var("b".to_string()))),
-        //                         mode: AssignMode::Replace,
-        //                     },
-        //                     Assign {
-        //                         place: Place::Var("ptr".to_string()),
-        //                         value: Expr::Simple(SimpleExpr::Int(1)),
-        //                         mode: AssignMode::Add,
-        //                     },
-        //                     Switch {
-        //                         cond: Expr::Simple(SimpleExpr::Place(Place::Var(
-        //                             "iterations".to_string(),
-        //                         ))),
-        //                         cases: vec![
-        //                             (
-        //                                 10,
-        //                                 vec![
-        //                                     Assign {
-        //                                         place: Place::Deref("ptr".to_string()),
-        //                                         value: Expr::Simple(SimpleExpr::Int(10)),
-        //                                         mode: AssignMode::Replace,
-        //                                     },
-        //                                     Assign {
-        //                                         place: Place::Var("ptr".to_string()),
-        //                                         value: Expr::Simple(SimpleExpr::Int(1)),
-        //                                         mode: AssignMode::Add,
-        //                                     },
-        //                                 ],
-        //                             ),
-        //                             (
-        //                                 8,
-        //                                 vec![
-        //                                     Assign {
-        //                                         place: Place::Deref("ptr".to_string()),
-        //                                         value: Expr::Simple(SimpleExpr::Int(8)),
-        //                                         mode: AssignMode::Replace,
-        //                                     },
-        //                                     Assign {
-        //                                         place: Place::Var("ptr".to_string()),
-        //                                         value: Expr::Simple(SimpleExpr::Int(1)),
-        //                                         mode: AssignMode::Add,
-        //                                     },
-        //                                 ],
-        //                             ),
-        //                             (
-        //                                 6,
-        //                                 vec![
-        //                                     Assign {
-        //                                         place: Place::Deref("ptr".to_string()),
-        //                                         value: Expr::Simple(SimpleExpr::Int(6)),
-        //                                         mode: AssignMode::Replace,
-        //                                     },
-        //                                     Assign {
-        //                                         place: Place::Var("ptr".to_string()),
-        //                                         value: Expr::Simple(SimpleExpr::Int(1)),
-        //                                         mode: AssignMode::Add,
-        //                                     },
-        //                                 ],
-        //                             ),
-        //                             (
-        //                                 4,
-        //                                 vec![
-        //                                     Assign {
-        //                                         place: Place::Deref("ptr".to_string()),
-        //                                         value: Expr::Simple(SimpleExpr::Int(4)),
-        //                                         mode: AssignMode::Replace,
-        //                                     },
-        //                                     Assign {
-        //                                         place: Place::Var("ptr".to_string()),
-        //                                         value: Expr::Simple(SimpleExpr::Int(1)),
-        //                                         mode: AssignMode::Add,
-        //                                     },
-        //                                 ],
-        //                             ),
-        //                         ],
-        //                         default: vec![
-        //                             Assign {
-        //                                 place: Place::Deref("ptr".to_string()),
-        //                                 value: Expr::Simple(SimpleExpr::Int(0)),
-        //                                 mode: AssignMode::Replace,
-        //                             },
-        //                             Assign {
-        //                                 place: Place::Var("ptr".to_string()),
-        //                                 value: Expr::Simple(SimpleExpr::Int(1)),
-        //                                 mode: AssignMode::Add,
-        //                             },
-        //                         ],
-        //                     },
-        //                 ],
-        //             },
-        //         ],
-        //     }],
-        // })
     }
 }
 
@@ -322,6 +152,17 @@ fn ast_parser() -> impl Parser<char, Ast, Error = Simple<char>> {
         .ignore_then(expr.clone())
         .map(Statement::Return);
 
+    // TODO: only allow break and continue in loops
+    let r#break = text::keyword("break").map(|_| Statement::Break);
+    let r#continue = text::keyword("continue").map(|_| Statement::Continue);
+
+    let statement_without_block = r#let
+        .or(assign)
+        .or(r#return)
+        .or(r#break)
+        .or(r#continue)
+        .padded();
+
     let semicolon = just(';').padded();
     let comma = just(',').padded();
     let lbrace = just('{').padded();
@@ -331,19 +172,23 @@ fn ast_parser() -> impl Parser<char, Ast, Error = Simple<char>> {
         let r#while = text::keyword("while")
             .ignore_then(expr.clone())
             .then(block.clone())
-            .map(|(cond, body)| Statement::While { cond, body });
+            .map(|(cond, body)| Statement::Loop {
+                body: vec![Statement::Switch {
+                    cond,
+                    cases: vec![(0, vec![Statement::Break])],
+                    default: body,
+                }],
+            });
 
         let if_else = text::keyword("if")
             .ignore_then(expr.clone())
             .then(block.clone())
             .then(text::keyword("else").ignore_then(block.clone()).or_not())
-            .map(|((cond, main_body), else_body)| Statement::IfElse {
+            .map(|((cond, main_body), else_body)| Statement::Switch {
                 cond,
-                main_body,
-                else_body: else_body.unwrap_or_default(),
+                cases: vec![(0, else_body.unwrap_or_default())],
+                default: main_body,
             });
-
-        let statement_without_block = r#let.or(assign).or(r#return).padded();
 
         let statement_with_block = recursive(|statement_with_block| {
             let arm = just("=>").padded().ignore_then(

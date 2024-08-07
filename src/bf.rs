@@ -338,7 +338,9 @@ impl Instruction {
     }
 }
 
-fn execute_bf(bf_code: &str) -> Vec<usize> {
+type Cell = usize;
+
+fn execute_bf(bf_code: &str) -> Vec<Cell> {
     let mut tape = vec![0];
     let mut ptr = 0;
     let mut i = 0;
@@ -358,13 +360,13 @@ fn execute_bf(bf_code: &str) -> Vec<usize> {
             '+' => tape[ptr] += 1,
             '-' => tape[ptr] -= 1,
             '.' => {
-                stdout.write_all(&[tape[ptr] as u8]).unwrap();
+                stdout.write_all(&[tape[ptr] as _]).unwrap();
                 stdout.flush().unwrap();
             }
             ',' => {
                 let mut buf = [0u8];
                 stdin.read_exact(&mut buf).unwrap();
-                tape[ptr] = usize::from(buf[0]);
+                tape[ptr] = Cell::from(buf[0]);
             }
             '[' => {
                 if tape[ptr] == 0 {
@@ -430,12 +432,12 @@ impl Program {
             let (reg_i, temp_i, stack_i, heap_i, stack_active_i, heap_active_i) =
                 (chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5]);
             if stack_active_i != 0 {
-                stack.push(usize::from(stack_i));
+                stack.push(stack_i as _);
             }
-            heap.push(usize::from(heap_i));
-            // assert_eq!(heap_active_i, 0);
-            // assert_eq!(reg_i, 0);
-            // assert_eq!(temp_i, 0);
+            heap.push(heap_i as _);
+            assert_eq!(heap_active_i, 0);
+            assert_eq!(reg_i, 0);
+            assert_eq!(temp_i, 0);
         }
         MemoryState { stack, heap }
     }
