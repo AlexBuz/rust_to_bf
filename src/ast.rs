@@ -63,7 +63,7 @@ pub enum Statement {
         body: Vec<Statement>,
     },
     Return(Expr),
-    // TODO: statements for IO
+    Eval(Expr),
 }
 
 impl From<Statement> for Vec<Statement> {
@@ -90,7 +90,7 @@ pub struct Ast {
 impl Ast {
     pub fn parse(src: &str) -> Result<Self, Vec<Simple<char>>> {
         let parsed = ast_parser().parse(src);
-        if crate::DEBUG {
+        if crate::config::DEBUG {
             println!("{:#?}", parsed);
         }
         parsed
@@ -156,11 +156,14 @@ fn ast_parser() -> impl Parser<char, Ast, Error = Simple<char>> {
     let r#break = text::keyword("break").map(|_| Statement::Break);
     let r#continue = text::keyword("continue").map(|_| Statement::Continue);
 
+    let eval = expr.clone().map(Statement::Eval);
+
     let statement_without_block = r#let
         .or(assign)
         .or(r#return)
         .or(r#break)
         .or(r#continue)
+        .or(eval)
         .padded();
 
     let semicolon = just(';').padded();

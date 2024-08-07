@@ -1,3 +1,4 @@
+use crate::macros::indented_println;
 use std::io::{Read, Write};
 
 #[derive(Debug, Clone, Copy)]
@@ -135,11 +136,6 @@ pub enum Instruction {
         cond: Place,
         body: Vec<Instruction>,
     },
-    // IfElse {
-    //     cond: Place,
-    //     main_body: Vec<Instruction>,
-    //     else_body: Vec<Instruction>,
-    // },
     Switch {
         cond: Place,
         cases: Vec<Vec<Instruction>>, // item at index n is the body for case n
@@ -153,20 +149,6 @@ pub enum Instruction {
     },
 }
 
-macro_rules! indent_println {
-    ($depth:expr, $($arg:tt)*) => {
-        if crate::DEBUG {
-            print!("{:width$}", "", width = $depth * 4);
-            println!($($arg)*);
-        }
-    };
-    () => {
-        if crate::DEBUG {
-            println!();
-        }
-    };
-}
-
 impl Instruction {
     pub fn execute(&self, state: &mut MemoryState, depth: usize) {
         match self {
@@ -175,7 +157,7 @@ impl Instruction {
                 src,
                 store_mode,
             } => {
-                indent_println!(depth, "{dst} {store_mode} {src};");
+                indented_println!(depth, "{dst} {store_mode} {src};");
                 let src_value = src.resolve(state);
                 let dst_place = dst.resolve(state);
                 match store_mode {
@@ -183,40 +165,40 @@ impl Instruction {
                     StoreMode::Add => *dst_place += src_value,
                     StoreMode::Subtract => *dst_place -= src_value,
                 }
-                indent_println!(depth, "stack: {:?}", state.stack);
-                indent_println!();
+                indented_println!(depth, "stack: {:?}", state.stack);
+                indented_println!();
             }
             Instruction::GrowStack { amount } => {
-                indent_println!(depth, "stack.grow_by({amount});");
+                indented_println!(depth, "stack.grow_by({amount});");
                 state.stack.resize(state.stack.len() + amount, 0);
-                indent_println!(depth, "stack: {:?}", state.stack);
-                indent_println!();
+                indented_println!(depth, "stack: {:?}", state.stack);
+                indented_println!();
             }
             Instruction::ShrinkStack { amount } => {
-                indent_println!(depth, "stack.shrink_by({amount});");
+                indented_println!(depth, "stack.shrink_by({amount});");
                 state.stack.truncate(state.stack.len() - amount);
-                indent_println!(depth, "stack: {:?}", state.stack);
-                indent_println!();
+                indented_println!(depth, "stack: {:?}", state.stack);
+                indented_println!();
             }
             Instruction::While { cond, body } => {
-                indent_println!(depth, "while {cond} {{");
+                indented_println!(depth, "while {cond} {{");
                 let mut i = 0;
                 while *cond.resolve(state) != 0 {
-                    indent_println!(depth + 1, "iteration {i}: {{");
+                    indented_println!(depth + 1, "iteration {i}: {{");
                     for instruction in body {
                         instruction.execute(state, depth + 2);
                     }
-                    indent_println!(depth + 1, "}}");
+                    indented_println!(depth + 1, "}}");
                     i += 1;
                 }
-                indent_println!(depth, "}}");
+                indented_println!(depth, "}}");
             }
             Instruction::Switch {
                 cond,
                 cases,
                 default,
             } => {
-                indent_println!(depth, "switch {cond} {{");
+                indented_println!(depth, "switch {cond} {{");
                 // cases
                 //     .get(*cond.resolve(state))
                 //     .unwrap_or(default)
@@ -224,19 +206,19 @@ impl Instruction {
                 //     .for_each(|instruction| instruction.execute(state, depth + 1));
                 let case_index = *cond.resolve(state);
                 if case_index < cases.len() {
-                    indent_println!(depth + 1, "case {case_index}: {{");
+                    indented_println!(depth + 1, "case {case_index}: {{");
                     for instruction in &cases[case_index] {
                         instruction.execute(state, depth + 2);
                     }
-                    indent_println!(depth + 1, "}}");
+                    indented_println!(depth + 1, "}}");
                 } else {
-                    indent_println!(depth + 1, "default: {{");
+                    indented_println!(depth + 1, "default: {{");
                     for instruction in default {
                         instruction.execute(state, depth + 2);
                     }
-                    indent_println!(depth + 1, "}}");
+                    indented_println!(depth + 1, "}}");
                 }
-                indent_println!(depth, "}}");
+                indented_println!(depth, "}}");
             }
             Instruction::Input { dst } => {
                 let mut stdin = std::io::stdin().lock();
@@ -260,15 +242,18 @@ pub struct Program {
 
 impl Program {
     pub fn execute(&self) -> MemoryState {
-        // return self.execute_through_bf();
-        let mut state = MemoryState {
-            stack: vec![],
-            heap: vec![],
-        };
-        for instruction in &self.instructions {
-            instruction.execute(&mut state, 0);
+        if crate::config::EXECUTE_THROUGH_BF {
+            self.execute_through_bf()
+        } else {
+            let mut state = MemoryState {
+                stack: vec![],
+                heap: vec![],
+            };
+            for instruction in &self.instructions {
+                instruction.execute(&mut state, 0);
+            }
+            state
         }
-        state
     }
 }
 

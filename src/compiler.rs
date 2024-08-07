@@ -45,6 +45,51 @@ fn compile_simple_expr(expr: &ast::SimpleExpr, scope: &Scope) -> ir::Value {
 
 type FragId = usize;
 
+fn enter_frag(frag_id: FragId) -> [ir::Instruction; 2] {
+    [
+        ir::Instruction::GrowStack { amount: 1 },
+        ir::Instruction::Move {
+            dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
+            src: ir::Value::Immediate(frag_id),
+            store_mode: ir::StoreMode::Add,
+        },
+    ]
+}
+
+fn compile_intrinsic_call(
+    func: &str,
+    args: &[ast::Expr],
+    scope: &mut Scope,
+    cur_frag: &mut FragId,
+) -> ir::Value {
+    match func {
+        "getchar" => {
+            if !args.is_empty() {
+                panic!("`getchar` does not take any arguments");
+            }
+            scope.global.code[*cur_frag].extend([
+                ir::Instruction::GrowStack { amount: 1 },
+                ir::Instruction::Input {
+                    dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
+                },
+            ]);
+            scope.frame_offset += 1;
+            ir::Value::Deref(ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }))
+        }
+        "putchar" => {
+            if args.len() != 1 {
+                panic!("`putchar` takes exactly one argument");
+            }
+            let before_offset = scope.frame_offset;
+            let arg = compile_expr(&args[0], scope, cur_frag);
+            scope.global.code[*cur_frag].extend([ir::Instruction::Output { src: arg }]);
+            scope.truncate(before_offset);
+            ir::Value::Immediate(0)
+        }
+        _ => panic!("Function `{func}` not defined"),
+    }
+}
+
 fn compile_call(
     func: &str,
     args: &[ast::Expr],
@@ -56,6 +101,13 @@ fn compile_call(
     // The callee is responsible for popping the arguments when returning
     // The caller then pops the return address and uses the return value (now at the top of the stack)
 
+    let Some(call_frag) = compile_func(func, scope.global) else {
+        return compile_intrinsic_call(func, args, scope, cur_frag);
+    };
+    let return_frag = scope
+        .global
+        .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
+
     scope.global.code[*cur_frag].extend([ir::Instruction::GrowStack {
         amount: 2, // space for return value and return address
     }]);
@@ -65,24 +117,12 @@ fn compile_call(
         compile_expr_and_push(arg, scope, cur_frag)
     }
 
-    let call_frag = compile_func(func, scope.global);
-    let return_frag = scope
-        .global
-        .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
-
-    scope.global.code[*cur_frag].extend([
-        ir::Instruction::Move {
-            dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: args.len() }),
-            src: ir::Value::Immediate(return_frag),
-            store_mode: ir::StoreMode::Add,
-        },
-        ir::Instruction::GrowStack { amount: 1 },
-        ir::Instruction::Move {
-            dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
-            src: ir::Value::Immediate(call_frag),
-            store_mode: ir::StoreMode::Add,
-        },
-    ]);
+    scope.global.code[*cur_frag].extend([ir::Instruction::Move {
+        dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: args.len() }),
+        src: ir::Value::Immediate(return_frag),
+        store_mode: ir::StoreMode::Add,
+    }]);
+    scope.global.code[*cur_frag].extend(enter_frag(call_frag));
 
     *cur_frag = return_frag;
 
@@ -188,17 +228,6 @@ impl<'a, 'b> Scope<'a, 'b> {
     }
 }
 
-fn enter_frag(frag_id: FragId) -> [ir::Instruction; 2] {
-    [
-        ir::Instruction::GrowStack { amount: 1 },
-        ir::Instruction::Move {
-            dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
-            src: ir::Value::Immediate(frag_id),
-            store_mode: ir::StoreMode::Add,
-        },
-    ]
-}
-
 fn execute_block<'a>(body: &'a [ast::Statement], scope: &mut Scope<'a, '_>, frag_cur: &mut FragId) {
     let block = compile_block(
         body,
@@ -235,15 +264,24 @@ fn compile_block<'a>(
                 scope.frame_offset -= 1; // cancel out the fact that add_decl also increments frame_offset
                 scope.add_decl(decl);
             }
-            ast::Statement::Assign { place, value, mode } => {
-                let src = compile_expr(value, scope, &mut cur_frag);
-                let dst = compile_place(place, scope, true);
-                scope.global.code[cur_frag].push(ir::Instruction::Move {
-                    dst,
-                    src,
-                    store_mode: compile_store_mode(*mode),
-                });
-            }
+            ast::Statement::Assign { place, value, mode } => match (mode, value) {
+                (ast::AssignMode::Replace, ast::Expr::Call { func, args })
+                    if func == "getchar" && args.is_empty() =>
+                {
+                    // optimization for reading a character into an existing location
+                    let dst = compile_place(place, scope, true);
+                    scope.global.code[cur_frag].push(ir::Instruction::Input { dst });
+                }
+                _ => {
+                    let src = compile_expr(value, scope, &mut cur_frag);
+                    let dst = compile_place(place, scope, true);
+                    scope.global.code[cur_frag].push(ir::Instruction::Move {
+                        dst,
+                        src,
+                        store_mode: compile_store_mode(*mode),
+                    });
+                }
+            },
             ast::Statement::Loop { body } => {
                 scope.frame_offset += 2;
                 let loop_start = compile_block(body, vec![], scope, scope.frame_offset).start;
@@ -339,6 +377,11 @@ fn compile_block<'a>(
                 scope.truncate(final_frame_size);
                 cur_frag = 0;
             }
+            ast::Statement::Eval(expr) => {
+                let before_offset = scope.frame_offset;
+                compile_expr(expr, scope, &mut cur_frag);
+                scope.truncate(before_offset);
+            }
         }
     }
     scope.global.code[cur_frag].push(ir::Instruction::ShrinkStack {
@@ -351,16 +394,12 @@ fn compile_block<'a>(
     }
 }
 
-fn compile_func(name: &str, global_state: &mut GlobalState) -> FragId {
-    let func = global_state
-        .functions
-        .get(name)
-        .copied()
-        .unwrap_or_else(|| panic!("Function `{name}` not found."));
+fn compile_func(name: &str, global_state: &mut GlobalState) -> Option<FragId> {
+    let func = global_state.functions.get(name).copied()?;
 
     if let Some(&func_id) = global_state.func_ids.get(func.name.as_str()) {
         // function already compiled
-        return func_id;
+        return Some(func_id);
     }
 
     let block_start = global_state.code.len();
@@ -385,7 +424,7 @@ fn compile_func(name: &str, global_state: &mut GlobalState) -> FragId {
 
     assert!(block_start == block.start);
 
-    block_start
+    Some(block_start)
 }
 
 pub fn compile(ast: ast::Ast) -> ir::Program {
@@ -401,7 +440,8 @@ pub fn compile(ast: ast::Ast) -> ir::Program {
 
     let mut global_state = GlobalState::new(functions);
 
-    let main_func_id = compile_func("main", &mut global_state);
+    let main_func_id = compile_func("main", &mut global_state)
+        .unwrap_or_else(|| panic!("Function `main` not defined."));
 
     global_state.code[0].clear(); // remove dead code
 
