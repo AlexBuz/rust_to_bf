@@ -110,13 +110,27 @@ fn ast_parser() -> impl Parser<char, Ast, Error = Simple<char>> {
 
     let place = ident.map(Place::Var).or(r#deref);
 
+    let escape_sequence = just('\\').ignore_then(one_of("nrt\\").map(|c| match c {
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        '\\' => '\\',
+        _ => panic!("Invalid escape sequence"),
+    }));
+
+    let char_literal = just('\'')
+        .ignore_then(none_of("'\\").or(escape_sequence))
+        .then_ignore(just('\''))
+        .map(|c| c as usize);
+
     let int = text::int(10)
         .map(|s: String| s.parse::<usize>().unwrap())
+        .or(char_literal)
         .padded();
 
     let simple_expr = place
         .map(SimpleExpr::Place)
-        .or(int.map(SimpleExpr::Int))
+        .or(int.clone().map(SimpleExpr::Int))
         .map(Expr::Simple);
 
     let expr = recursive(|expr| {
