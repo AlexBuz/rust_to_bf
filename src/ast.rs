@@ -172,6 +172,20 @@ fn ast_parser() -> impl Parser<char, Ast, Error = Simple<char>> {
     let rbrace = just('}').padded();
 
     let block = recursive(|block| {
+        let if_else = text::keyword("if")
+            .ignore_then(expr.clone())
+            .then(block.clone())
+            .then(text::keyword("else").ignore_then(block.clone()).or_not())
+            .map(|((cond, main_body), else_body)| Statement::Switch {
+                cond,
+                cases: vec![(0, else_body.unwrap_or_default())],
+                default: main_body,
+            });
+
+        let r#loop = text::keyword("loop")
+            .ignore_then(block.clone())
+            .map(|body| Statement::Loop { body });
+
         let r#while = text::keyword("while")
             .ignore_then(expr.clone())
             .then(block.clone())
@@ -181,16 +195,6 @@ fn ast_parser() -> impl Parser<char, Ast, Error = Simple<char>> {
                     cases: vec![(0, vec![Statement::Break])],
                     default: body,
                 }],
-            });
-
-        let if_else = text::keyword("if")
-            .ignore_then(expr.clone())
-            .then(block.clone())
-            .then(text::keyword("else").ignore_then(block.clone()).or_not())
-            .map(|((cond, main_body), else_body)| Statement::Switch {
-                cond,
-                cases: vec![(0, else_body.unwrap_or_default())],
-                default: main_body,
             });
 
         let statement_with_block = recursive(|statement_with_block| {
@@ -224,6 +228,7 @@ fn ast_parser() -> impl Parser<char, Ast, Error = Simple<char>> {
                 });
 
             let statement_with_block = if_else
+                .or(r#loop)
                 .or(r#while)
                 .or(switch)
                 .or(block.map(|body| Statement::Block { body }))
