@@ -38,7 +38,9 @@ impl IndirectPlace {
         match self {
             IndirectPlace::Heap { address } => {
                 let index = *address.resolve(state);
-                state.heap.resize(index + 1, 0);
+                if index >= state.heap.len() {
+                    state.heap.resize(index + 1, 0);
+                }
                 &mut state.heap[index]
             }
         }
