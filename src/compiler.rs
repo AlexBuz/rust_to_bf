@@ -77,13 +77,15 @@ fn compile_intrinsic_call(
             ir::Value::Deref(ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }))
         }
         "putchar" => {
-            if args.len() != 1 {
-                panic!("`putchar` takes exactly one argument");
+            if args.is_empty() {
+                panic!("`putchar` requires at least one argument");
             }
-            let before_offset = scope.frame_offset;
-            let arg = compile_expr(&args[0], scope, cur_frag);
-            scope.global.code[*cur_frag].extend([ir::Instruction::Output { src: arg }]);
-            scope.truncate(before_offset);
+            let frame_size = scope.frame_offset;
+            for arg in args {
+                let src = compile_expr(arg, scope, cur_frag);
+                scope.global.code[*cur_frag].push(ir::Instruction::Output { src });
+                scope.truncate(frame_size, *cur_frag);
+            }
             ir::Value::Immediate(0)
         }
         _ => panic!("Function `{func}` not defined"),
@@ -153,11 +155,22 @@ fn compile_expr_and_push(expr: &ast::Expr, scope: &mut Scope, cur_frag: &mut Fra
                 },
             ]);
         }
-        ast::Expr::Call { func, args } => {
-            let before_offset = scope.frame_offset;
-            compile_call(func, args, scope, cur_frag);
-            assert!(scope.frame_offset == before_offset + 1);
-        }
+        ast::Expr::Call { func, args } => match compile_call(func, args, scope, cur_frag) {
+            ir::Value::Deref(ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 })) => {
+                // return value is already at the top of the stack, no need to move it
+            }
+            return_value => {
+                scope.frame_offset += 1;
+                scope.global.code[*cur_frag].extend([
+                    ir::Instruction::GrowStack { amount: 1 },
+                    ir::Instruction::Move {
+                        dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
+                        src: return_value,
+                        store_mode: ir::StoreMode::Add,
+                    },
+                ]);
+            }
+        },
     }
 }
 
@@ -215,16 +228,21 @@ impl<'a, 'b> Scope<'a, 'b> {
         self.frame_offset += 1;
     }
 
-    fn truncate(&mut self, final_frame_size: usize) {
-        self.vars.truncate(
-            self.vars
-                .iter()
-                .rev()
-                .position(|var| var.frame_offset < final_frame_size)
-                .map(|pos| self.vars.len() - pos)
-                .unwrap_or(0),
-        );
-        self.frame_offset = final_frame_size;
+    fn truncate(&mut self, target_frame_size: usize, cur_frag: FragId) {
+        if target_frame_size < self.frame_offset {
+            self.global.code[cur_frag].push(ir::Instruction::ShrinkStack {
+                amount: self.frame_offset - target_frame_size,
+            });
+            self.vars.truncate(
+                self.vars
+                    .iter()
+                    .rev()
+                    .position(|var| var.frame_offset < target_frame_size)
+                    .map(|pos| self.vars.len() - pos)
+                    .unwrap_or(0),
+            );
+        }
+        self.frame_offset = target_frame_size;
     }
 }
 
@@ -292,12 +310,18 @@ fn compile_block<'a>(
                     .global
                     .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
 
-                scope.global.code[frag_old].extend(enter_frag(cur_frag));
-                scope.global.code[frag_old].extend(enter_frag(loop_start));
+                for frag in [cur_frag, loop_start] {
+                    scope.global.code[frag_old].extend(enter_frag(frag));
+                }
             }
-            ast::Statement::Continue => break,
+            ast::Statement::Continue => {
+                scope.truncate(final_frame_size, cur_frag);
+                cur_frag = 0;
+                break;
+            }
             ast::Statement::Break => {
-                scope.global.code[cur_frag].push(ir::Instruction::ShrinkStack { amount: 1 });
+                scope.truncate(final_frame_size - 1, cur_frag);
+                cur_frag = 0;
                 break;
             }
             ast::Statement::Switch {
@@ -348,7 +372,7 @@ fn compile_block<'a>(
                         cur_frag = scope
                             .global
                             .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
-                        for block in case_blocks {
+                        for block in case_blocks.into_iter().chain([default_block]) {
                             scope.global.code[block.end].extend(enter_frag(cur_frag));
                         }
                     }
@@ -371,23 +395,23 @@ fn compile_block<'a>(
                         store_mode: ir::StoreMode::Add,
                     },
                     ir::Instruction::ShrinkStack {
-                        amount: scope.frame_offset,
+                        // clear the rest of the frame, since the truncation will only clear down to
+                        // final_frame_size (which may be greater than 0 if this is a nested block)
+                        amount: final_frame_size,
                     },
                 ]);
-                scope.truncate(final_frame_size);
+                scope.truncate(final_frame_size, cur_frag);
                 cur_frag = 0;
+                break;
             }
             ast::Statement::Eval(expr) => {
-                let before_offset = scope.frame_offset;
+                let frame_size = scope.frame_offset;
                 compile_expr(expr, scope, &mut cur_frag);
-                scope.truncate(before_offset);
+                scope.truncate(frame_size, cur_frag);
             }
         }
     }
-    scope.global.code[cur_frag].push(ir::Instruction::ShrinkStack {
-        amount: scope.frame_offset - final_frame_size,
-    });
-    scope.truncate(final_frame_size);
+    scope.truncate(final_frame_size, cur_frag);
     CompiledBlock {
         start: start_frag,
         end: cur_frag,
