@@ -205,10 +205,17 @@ impl<'a> GlobalState<'a> {
     }
 }
 
+struct LoopInfo {
+    start: FragId,
+    after: FragId,
+    frame_size: usize,
+}
+
 struct Scope<'a, 'b> {
     vars: Vec<Var<'a>>,
     frame_offset: usize,
     global: &'b mut GlobalState<'a>,
+    loop_stack: Vec<LoopInfo>,
 }
 
 impl<'a, 'b> Scope<'a, 'b> {
@@ -217,6 +224,7 @@ impl<'a, 'b> Scope<'a, 'b> {
             vars: vec![],
             frame_offset: 0,
             global,
+            loop_stack: vec![],
         }
     }
 
@@ -246,18 +254,16 @@ impl<'a, 'b> Scope<'a, 'b> {
     }
 }
 
-fn execute_block<'a>(body: &'a [ast::Statement], scope: &mut Scope<'a, '_>, frag_cur: &mut FragId) {
+fn execute_block<'a>(body: &'a [ast::Statement], scope: &mut Scope<'a, '_>, cur_frag: &mut FragId) {
     let block = compile_block(
         body,
         vec![ir::Instruction::ShrinkStack { amount: 1 }],
         scope,
         scope.frame_offset,
     );
-    scope.global.code[*frag_cur].extend(enter_frag(block.start));
-    if block.start == block.end {
-        println!("Block with no branches");
-    }
-    *frag_cur = block.end;
+    scope.global.code[*cur_frag].extend(enter_frag(block.start));
+    // TODO: if block.start == block.end, then inline the block
+    *cur_frag = block.end;
 }
 
 struct CompiledBlock {
@@ -301,26 +307,42 @@ fn compile_block<'a>(
                 }
             },
             ast::Statement::Loop { body } => {
-                scope.frame_offset += 2;
-                let loop_start = compile_block(body, vec![], scope, scope.frame_offset).start;
-                scope.frame_offset -= 2;
-
-                let frag_old = cur_frag;
-                cur_frag = scope
+                let after_loop = scope
                     .global
                     .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
-
-                for frag in [cur_frag, loop_start] {
-                    scope.global.code[frag_old].extend(enter_frag(frag));
-                }
+                let loop_start = scope.global.code.len();
+                scope.loop_stack.push(LoopInfo {
+                    start: loop_start,
+                    after: after_loop,
+                    frame_size: scope.frame_offset,
+                });
+                let loop_body = compile_block(
+                    body,
+                    vec![ir::Instruction::ShrinkStack { amount: 1 }],
+                    scope,
+                    scope.frame_offset,
+                );
+                assert!(loop_start == loop_body.start);
+                scope.global.code[cur_frag].extend(enter_frag(loop_start));
+                scope.global.code[loop_body.end].extend(enter_frag(loop_start));
+                scope.loop_stack.pop();
+                cur_frag = after_loop;
             }
             ast::Statement::Continue => {
-                scope.truncate(final_frame_size, cur_frag);
+                let &LoopInfo {
+                    start, frame_size, ..
+                } = scope.loop_stack.last().expect("No loop to continue");
+                scope.truncate(frame_size, cur_frag);
+                scope.global.code[cur_frag].extend(enter_frag(start));
                 cur_frag = 0;
                 break;
             }
             ast::Statement::Break => {
-                scope.truncate(final_frame_size - 1, cur_frag);
+                let &LoopInfo {
+                    after, frame_size, ..
+                } = scope.loop_stack.last().expect("No loop to break");
+                scope.truncate(frame_size, cur_frag);
+                scope.global.code[cur_frag].extend(enter_frag(after));
                 cur_frag = 0;
                 break;
             }
