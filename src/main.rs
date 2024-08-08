@@ -7,6 +7,7 @@ mod macros;
 mod config {
     pub const DEBUG: bool = false;
     pub const EXECUTE_THROUGH_BF: bool = false;
+    pub const PRINT_FINAL_STATE: bool = false;
 }
 
 use macros::debug_println;
@@ -22,7 +23,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let program = compiler::compile(ast);
             debug_println!("{:#?}", program);
             let final_state = program.execute();
-            println!("{final_state}");
+            if config::PRINT_FINAL_STATE {
+                println!("Final memory state:\n{final_state}");
+            }
             Ok(())
         }
         Err(parse_errs) => {

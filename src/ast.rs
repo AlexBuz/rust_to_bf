@@ -1,5 +1,3 @@
-// TODO: perhaps make this file into a separate crate to improve compile times
-
 use chumsky::prelude::*;
 
 // TODO: Use a reference to a string instead of a string.
@@ -19,10 +17,17 @@ pub enum SimpleExpr {
 }
 
 #[derive(Debug, Clone)]
+pub struct CallExpr {
+    // TODO: Instead of an Ident for the func, take an Expr to allow for dynamic dispatch.
+    pub func: Ident,
+    pub exclamation: bool,
+    pub args: Vec<Expr>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Expr {
     Simple(SimpleExpr),
-    // TODO: Instead of an Ident for the func, take an Expr to allow for dynamic dispatch.
-    Call { func: Ident, args: Vec<Expr> },
+    Call(CallExpr),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -109,19 +114,29 @@ fn ast_parser() -> impl Parser<char, Ast, Error = Simple<char>> {
         .map(|s: String| s.parse::<usize>().unwrap())
         .padded();
 
-    let simple_value = place.map(SimpleExpr::Place).or(int.map(SimpleExpr::Int));
+    let simple_expr = place
+        .map(SimpleExpr::Place)
+        .or(int.map(SimpleExpr::Int))
+        .map(Expr::Simple);
 
     let expr = recursive(|expr| {
         let call = ident
+            .then(just('!').or_not().map(|i| i.is_some()))
             .then(
                 expr.separated_by(just(','))
                     .allow_trailing()
                     .delimited_by(just('('), just(')'))
                     .padded(),
             )
-            .map(|(func, args)| Expr::Call { func, args });
+            .map(|((func, exclamation), args)| {
+                Expr::Call(CallExpr {
+                    func,
+                    exclamation,
+                    args,
+                })
+            });
 
-        let expr = call.or(simple_value.map(Expr::Simple)).padded();
+        let expr = call.or(simple_expr);
 
         expr
     });

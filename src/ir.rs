@@ -217,7 +217,7 @@ impl Instruction {
                 indented_println!(depth, "}}");
             }
             Instruction::Input { dst } => {
-                indented_print!(depth, "{dst} = getchar(); // ");
+                indented_print!(depth, "{dst} = getchar!(); // ");
                 std::io::stdout().flush().unwrap();
                 let mut stdin = std::io::stdin().lock();
                 let mut buf = [0u8];
@@ -225,7 +225,7 @@ impl Instruction {
                 *dst.resolve(state) = usize::from(buf[0]);
             }
             Instruction::Output { src } => {
-                indented_print!(depth, "putchar({src}); // ");
+                indented_print!(depth, "putchar!({src}); // ");
                 let mut stdout = std::io::stdout().lock();
                 stdout.flush().unwrap();
                 stdout.write_all(&[src.resolve(state) as u8]).unwrap();

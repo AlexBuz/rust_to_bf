@@ -1,6 +1,5 @@
-use std::collections::BTreeMap;
-
 use crate::{ast, ir};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy)]
 struct Var<'a> {
@@ -56,6 +55,8 @@ fn enter_frag(frag_id: FragId) -> [ir::Instruction; 2] {
     ]
 }
 
+static INTRINSICS: &[&str] = &["getchar", "putchar"];
+
 fn compile_intrinsic_call(
     func: &str,
     args: &[ast::Expr],
@@ -88,11 +89,17 @@ fn compile_intrinsic_call(
             }
             ir::Value::Immediate(0)
         }
-        _ => panic!("Function `{func}` not defined"),
+        _ => {
+            if scope.global.functions.contains_key(func) {
+                panic!("Function `{func}` must be called without `!`");
+            } else {
+                panic!("Intrinsic `{func}` does not exist");
+            }
+        }
     }
 }
 
-fn compile_call(
+fn compile_func_call(
     func: &str,
     args: &[ast::Expr],
     scope: &mut Scope,
@@ -100,30 +107,32 @@ fn compile_call(
 ) -> ir::Value {
     // Stack order: [return value, return address, arguments, local variables]
     // The caller leaves space for the return value and pushes the return address and arguments
-    // The callee is responsible for popping the arguments when returning
-    // The caller then pops the return address and uses the return value (now at the top of the stack)
+    // The callee is responsible for popping the arguments before returning
+    // The caller then pops the return address and may use the return value
 
     let Some(call_frag) = compile_func(func, scope.global) else {
-        return compile_intrinsic_call(func, args, scope, cur_frag);
+        if INTRINSICS.contains(&func) {
+            panic!("Intrinsic `{func}` must be called with `!`");
+        } else {
+            panic!("Function `{func}` not defined");
+        }
     };
+
     let return_frag = scope
         .global
         .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
 
-    scope.global.code[*cur_frag].extend([ir::Instruction::GrowStack {
-        amount: 2, // space for return value and return address
-    }]);
+    // make space for the return value
+    scope.global.code[*cur_frag].push(ir::Instruction::GrowStack { amount: 1 });
+
+    // push the return address
+    scope.global.code[*cur_frag].extend(enter_frag(return_frag));
     scope.frame_offset += 2;
 
     for arg in args {
         compile_expr_and_push(arg, scope, cur_frag)
     }
 
-    scope.global.code[*cur_frag].extend([ir::Instruction::Move {
-        dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: args.len() }),
-        src: ir::Value::Immediate(return_frag),
-        store_mode: ir::StoreMode::Add,
-    }]);
     scope.global.code[*cur_frag].extend(enter_frag(call_frag));
 
     *cur_frag = return_frag;
@@ -134,10 +143,18 @@ fn compile_call(
     ir::Value::Deref(ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }))
 }
 
+fn compile_call(call: &ast::CallExpr, scope: &mut Scope, cur_frag: &mut FragId) -> ir::Value {
+    if call.exclamation {
+        compile_intrinsic_call(&call.func, &call.args, scope, cur_frag)
+    } else {
+        compile_func_call(&call.func, &call.args, scope, cur_frag)
+    }
+}
+
 fn compile_expr(expr: &ast::Expr, scope: &mut Scope, cur_frag: &mut FragId) -> ir::Value {
     match expr {
         ast::Expr::Simple(simple_expr) => compile_simple_expr(simple_expr, scope),
-        ast::Expr::Call { func, args } => compile_call(func, args, scope, cur_frag),
+        ast::Expr::Call(call_expr) => compile_call(call_expr, scope, cur_frag),
     }
 }
 
@@ -155,7 +172,7 @@ fn compile_expr_and_push(expr: &ast::Expr, scope: &mut Scope, cur_frag: &mut Fra
                 },
             ]);
         }
-        ast::Expr::Call { func, args } => match compile_call(func, args, scope, cur_frag) {
+        ast::Expr::Call(call_expr) => match compile_call(call_expr, scope, cur_frag) {
             ir::Value::Deref(ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 })) => {
                 // return value is already at the top of the stack, no need to move it
             }
@@ -289,9 +306,14 @@ fn compile_block<'a>(
                 scope.add_decl(decl);
             }
             ast::Statement::Assign { place, value, mode } => match (mode, value) {
-                (ast::AssignMode::Replace, ast::Expr::Call { func, args })
-                    if func == "getchar" && args.is_empty() =>
-                {
+                (
+                    ast::AssignMode::Replace,
+                    ast::Expr::Call(ast::CallExpr {
+                        func,
+                        exclamation: true,
+                        args,
+                    }),
+                ) if func == "getchar" && args.is_empty() => {
                     // optimization for reading a character into an existing location
                     let dst = compile_place(place, scope, true);
                     scope.global.code[cur_frag].push(ir::Instruction::Input { dst });
