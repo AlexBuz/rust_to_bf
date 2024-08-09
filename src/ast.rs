@@ -1,4 +1,5 @@
 use chumsky::prelude::*;
+use derive_more::{Display, From};
 
 // TODO: Use a &str instead of a String
 pub type Ident = String;
@@ -93,44 +94,15 @@ pub struct Ast {
     pub functions: Vec<Function>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, From, Display)]
 pub enum ParseError {
+    #[display("Lex error: {_0:#?}")]
     LexError(Vec<Simple<char>>),
+    #[display("Parse error: {_0:#?}")]
     ParseError(Vec<Simple<Token>>),
 }
 
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            ParseError::LexError(errors) => {
-                for error in errors {
-                    write!(f, "{}", error)?;
-                }
-                Ok(())
-            }
-            ParseError::ParseError(errors) => {
-                for error in errors {
-                    write!(f, "{}", error)?;
-                }
-                Ok(())
-            }
-        }
-    }
-}
-
 impl std::error::Error for ParseError {}
-
-impl From<Vec<Simple<char>>> for ParseError {
-    fn from(err: Vec<Simple<char>>) -> Self {
-        ParseError::LexError(err)
-    }
-}
-
-impl From<Vec<Simple<Token>>> for ParseError {
-    fn from(err: Vec<Simple<Token>>) -> Self {
-        ParseError::ParseError(err)
-    }
-}
 
 impl Ast {
     pub fn parse(src: &str) -> Result<Self, ParseError> {
@@ -175,118 +147,74 @@ pub enum Token {
     Ident(Ident),
 }
 
-impl std::fmt::Display for Token {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let s = match self {
-            // delimiters
-            Token::OpenBrace => "{",
-            Token::CloseBrace => "}",
-            Token::OpenParen => "(",
-            Token::CloseParen => ")",
-            Token::Comma => ",",
-            Token::Semi => ";",
-            // operators
-            Token::Star => "*",
-            Token::Bang => "!",
-            Token::Arrow => "=>",
-            Token::Eq => "=",
-            Token::PlusEq => "+=",
-            Token::MinusEq => "-=",
-            // keywords
-            Token::Let => "let",
-            Token::Mut => "mut",
-            Token::Fn => "fn",
-            Token::If => "if",
-            Token::Else => "else",
-            Token::While => "while",
-            Token::Loop => "loop",
-            Token::Match => "match",
-            Token::Return => "return",
-            Token::Break => "break",
-            Token::Continue => "continue",
-            // literals
-            Token::Int(int) => return write!(f, "{}", int),
-            Token::String(string) => return write!(f, "\"{}\"", string),
-            // identifiers
-            Token::Ident(ident) => return write!(f, "{}", ident),
-        };
-        write!(f, "{}", s)
-    }
-}
-
 fn lexer() -> impl Parser<char, Vec<Token>, Error = Simple<char>> {
-    let char_escape = just('\\').ignore_then(one_of("nrt\\\"'").map(|c| match c {
-        'n' => '\n',
-        'r' => '\r',
-        't' => '\t',
-        '\\' => '\\',
-        '"' => '"',
-        '\'' => '\'',
-        _ => unreachable!("Invalid escape sequence"),
-    }));
-
-    let char_literal = just('\'')
-        .ignore_then(none_of("'\\").or(char_escape.clone()))
-        .then_ignore(just('\''))
-        .map(|c| c as usize);
+    let char_escape = just('\\').ignore_then(choice([
+        just('n').to('\n'),
+        just('r').to('\r'),
+        just('t').to('\t'),
+        just('\\').to('\\'),
+        just('"').to('"'),
+        just('\'').to('\''),
+    ]));
 
     let string_literal = just('"')
-        .ignore_then(
-            none_of("\"\\")
-                .or(char_escape)
-                .repeated()
-                .map(|chars| chars.into_iter().collect::<String>()),
-        )
+        .ignore_then(none_of("\"\\").or(char_escape).repeated().collect())
         .then_ignore(just('"'))
         .map(Token::String);
 
-    let int_literal = text::int(10).from_str().unwrapped();
+    let char_literal = just('\'')
+        .ignore_then(none_of("'\\").or(char_escape))
+        .then_ignore(just('\''))
+        .map(|c| c as _)
+        .map(Token::Int);
 
-    let int = int_literal.or(char_literal).map(Token::Int);
+    let int_literal = text::int(10).from_str().unwrapped().map(Token::Int);
 
-    let token = choice((
-        // delimiters
-        choice([
-            just("{").to(Token::OpenBrace),
-            just("}").to(Token::CloseBrace),
-            just("(").to(Token::OpenParen),
-            just(")").to(Token::CloseParen),
-            just(",").to(Token::Comma),
-            just(";").to(Token::Semi),
-        ]),
-        // operators
-        choice([
-            just("*").to(Token::Star),
-            just("!").to(Token::Bang),
-            just("=>").to(Token::Arrow),
-            just("=").to(Token::Eq),
-            just("+=").to(Token::PlusEq),
-            just("-=").to(Token::MinusEq),
-        ]),
-        // keywords
-        choice([
-            text::keyword("let").to(Token::Let),
-            text::keyword("mut").to(Token::Mut),
-            text::keyword("fn").to(Token::Fn),
-            text::keyword("if").to(Token::If),
-            text::keyword("else").to(Token::Else),
-            text::keyword("while").to(Token::While),
-            text::keyword("loop").to(Token::Loop),
-            text::keyword("match").to(Token::Match),
-            text::keyword("return").to(Token::Return),
-            text::keyword("break").to(Token::Break),
-            text::keyword("continue").to(Token::Continue),
-        ]),
-        // literals
-        int,
-        string_literal,
-        // identifiers
-        text::ident().map(Token::Ident),
-    ));
+    let literal = string_literal.or(char_literal).or(int_literal);
+
+    let delimiter = choice([
+        just('{').to(Token::OpenBrace),
+        just('}').to(Token::CloseBrace),
+        just('(').to(Token::OpenParen),
+        just(')').to(Token::CloseParen),
+        just(',').to(Token::Comma),
+        just(';').to(Token::Semi),
+    ]);
+
+    let operator = choice([
+        just("*").to(Token::Star),
+        just("!").to(Token::Bang),
+        just("=>").to(Token::Arrow),
+        just("=").to(Token::Eq),
+        just("+=").to(Token::PlusEq),
+        just("-=").to(Token::MinusEq),
+    ]);
+
+    let keyword = choice([
+        text::keyword("let").to(Token::Let),
+        text::keyword("mut").to(Token::Mut),
+        text::keyword("fn").to(Token::Fn),
+        text::keyword("if").to(Token::If),
+        text::keyword("else").to(Token::Else),
+        text::keyword("while").to(Token::While),
+        text::keyword("loop").to(Token::Loop),
+        text::keyword("match").to(Token::Match),
+        text::keyword("return").to(Token::Return),
+        text::keyword("break").to(Token::Break),
+        text::keyword("continue").to(Token::Continue),
+    ]);
+
+    let ident = text::ident().map(Token::Ident);
+
+    let token = choice((literal, delimiter, operator, keyword, ident));
 
     let comment = just("//").then(none_of('\n').repeated()).padded();
 
-    token.padded_by(comment.repeated()).padded().repeated()
+    token
+        .padded_by(comment.repeated())
+        .padded()
+        .repeated()
+        .then_ignore(end())
 }
 
 #[allow(clippy::let_and_return)]

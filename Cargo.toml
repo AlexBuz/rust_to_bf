@@ -7,3 +7,4 @@ edition = "2021"
 anyhow = "1.0.86"
 chumsky = "0.9.3"
 clap = { version = "4.5.14", features = ["derive"] }
+derive_more = { version = "1.0.0", features = ["display", "from"] }
