@@ -1,6 +1,6 @@
 macro_rules! debug_print {
     ($($arg:tt)*) => {
-        if $crate::config::DEBUG {
+        if $crate::DEBUG.load($crate::Ordering::Relaxed) {
             print!($($arg)*);
         }
     };
@@ -8,7 +8,7 @@ macro_rules! debug_print {
 
 macro_rules! debug_println {
     ($($arg:tt)*) => {
-        if $crate::config::DEBUG {
+        if $crate::DEBUG.load($crate::Ordering::Relaxed) {
             println!($($arg)*);
         }
     };

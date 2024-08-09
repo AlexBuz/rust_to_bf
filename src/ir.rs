@@ -246,18 +246,14 @@ pub struct Program {
 
 impl Program {
     pub fn execute(&self) -> MemoryState {
-        if crate::config::EXECUTE_THROUGH_BF {
-            self.execute_through_bf()
-        } else {
-            let mut state = MemoryState {
-                stack: vec![],
-                heap: vec![],
-            };
-            for instruction in &self.instructions {
-                instruction.execute(&mut state, 0);
-            }
-            state
+        let mut state = MemoryState {
+            stack: vec![],
+            heap: vec![],
+        };
+        for instruction in &self.instructions {
+            instruction.execute(&mut state, 0);
         }
+        state
     }
 }
 

@@ -1,12 +1,15 @@
 use {
-    crate::ir::{
-        DirectPlace::{self, *},
-        IndirectPlace::{self, *},
-        Instruction::{self, *},
-        MemoryState,
-        Place::{self, *},
-        Program, StoreMode,
-        Value::*,
+    crate::{
+        ir::{
+            DirectPlace::{self, *},
+            IndirectPlace::{self, *},
+            Instruction::{self, *},
+            MemoryState,
+            Place::{self, *},
+            Program, StoreMode,
+            Value::*,
+        },
+        macros::debug_println,
     },
     std::{
         borrow::Cow,
@@ -401,7 +404,7 @@ fn execute_bf(bf_code: &str) -> Vec<Cell> {
         //     break;
         // }
     }
-    println!("# of instructions executed: {}", executed_count);
+    debug_println!("# of instructions executed: {}", executed_count);
     tape
 }
 
@@ -419,10 +422,8 @@ impl Program {
         output
     }
 
-    pub fn execute_through_bf(&self) -> MemoryState {
-        let bf_code = self.convert_to_bf();
-        println!("{}", bf_code);
-        let mut tape = execute_bf(&bf_code);
+    pub fn execute_bf(bf_code: &str) -> MemoryState {
+        let mut tape = execute_bf(bf_code);
         while tape.len() % 6 != 2 {
             tape.push(0);
         }
