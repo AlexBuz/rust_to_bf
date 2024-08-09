@@ -144,7 +144,7 @@ fn compile_func_call(
 }
 
 fn compile_call(call: &ast::CallExpr, scope: &mut Scope, cur_frag: &mut FragId) -> ir::Value {
-    if call.exclamation {
+    if call.bang {
         compile_intrinsic_call(&call.func, &call.args, scope, cur_frag)
     } else {
         compile_func_call(&call.func, &call.args, scope, cur_frag)
@@ -310,7 +310,7 @@ fn compile_block<'a>(
                     ast::AssignMode::Replace,
                     ast::Expr::Call(ast::CallExpr {
                         func,
-                        exclamation: true,
+                        bang: true,
                         args,
                     }),
                 ) if func == "getchar" && args.is_empty() => {
@@ -353,7 +353,10 @@ fn compile_block<'a>(
             ast::Statement::Continue => {
                 let &LoopInfo {
                     start, frame_size, ..
-                } = scope.loop_stack.last().expect("No loop to continue");
+                } = scope
+                    .loop_stack
+                    .last()
+                    .expect("`continue` may only be used inside a loop");
                 scope.truncate(frame_size, cur_frag);
                 scope.global.code[cur_frag].extend(enter_frag(start));
                 cur_frag = 0;
@@ -362,7 +365,10 @@ fn compile_block<'a>(
             ast::Statement::Break => {
                 let &LoopInfo {
                     after, frame_size, ..
-                } = scope.loop_stack.last().expect("No loop to break");
+                } = scope
+                    .loop_stack
+                    .last()
+                    .expect("`break` may only be used inside a loop");
                 scope.truncate(frame_size, cur_frag);
                 scope.global.code[cur_frag].extend(enter_frag(after));
                 cur_frag = 0;

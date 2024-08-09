@@ -20,7 +20,7 @@ pub enum SimpleExpr {
 pub struct CallExpr {
     // TODO: Instead of an Ident for the func, take an Expr to allow for dynamic dispatch.
     pub func: Ident,
-    pub exclamation: bool,
+    pub bang: bool,
     pub args: Vec<Expr>,
 }
 
@@ -92,25 +92,129 @@ pub struct Ast {
     pub functions: Vec<Function>,
 }
 
-impl Ast {
-    pub fn parse(src: &str) -> Result<Self, Vec<Simple<char>>> {
-        let parsed = ast_parser().parse(src);
-        if crate::config::DEBUG {
-            println!("{:#?}", parsed);
+#[derive(Debug, Clone)]
+pub enum ParseError {
+    LexError(Vec<Simple<char>>),
+    ParseError(Vec<Simple<Token>>),
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            ParseError::LexError(errors) => {
+                for error in errors {
+                    write!(f, "{}", error)?;
+                }
+                Ok(())
+            }
+            ParseError::ParseError(errors) => {
+                for error in errors {
+                    write!(f, "{}", error)?;
+                }
+                Ok(())
+            }
         }
-        parsed
     }
 }
 
-#[allow(clippy::let_and_return)]
-fn ast_parser() -> impl Parser<char, Ast, Error = Simple<char>> {
-    let ident = text::ident().padded();
+impl std::error::Error for ParseError {}
 
-    let r#deref = just('*').ignore_then(ident).padded().map(Place::Deref);
+impl From<Vec<Simple<char>>> for ParseError {
+    fn from(err: Vec<Simple<char>>) -> Self {
+        ParseError::LexError(err)
+    }
+}
 
-    let place = ident.map(Place::Var).or(r#deref);
+impl From<Vec<Simple<Token>>> for ParseError {
+    fn from(err: Vec<Simple<Token>>) -> Self {
+        ParseError::ParseError(err)
+    }
+}
 
-    let escape_sequence = just('\\').ignore_then(one_of("nrt\\").map(|c| match c {
+impl Ast {
+    pub fn parse(src: &str) -> Result<Self, ParseError> {
+        let tokens = lexer().parse(src)?;
+        let ast = parser().parse(tokens)?;
+        Ok(ast)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Token {
+    // delimiters
+    OpenBrace,
+    CloseBrace,
+    OpenParen,
+    CloseParen,
+    Comma,
+    Semi,
+    // operators
+    Star,
+    Bang,
+    Arrow,
+    Eq,
+    PlusEq,
+    MinusEq,
+    // keywords
+    Let,
+    Mut,
+    Fn,
+    If,
+    Else,
+    While,
+    Loop,
+    Match,
+    Return,
+    Break,
+    Continue,
+    // literals
+    Int(usize),
+    // identifiers
+    Ident(Ident),
+}
+
+impl std::fmt::Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let s = match self {
+            // delimiters
+            Token::OpenBrace => "{",
+            Token::CloseBrace => "}",
+            Token::OpenParen => "(",
+            Token::CloseParen => ")",
+            Token::Comma => ",",
+            Token::Semi => ";",
+            // operators
+            Token::Star => "*",
+            Token::Bang => "!",
+            Token::Arrow => "=>",
+            Token::Eq => "=",
+            Token::PlusEq => "+=",
+            Token::MinusEq => "-=",
+            // keywords
+            Token::Let => "let",
+            Token::Mut => "mut",
+            Token::Fn => "fn",
+            Token::If => "if",
+            Token::Else => "else",
+            Token::While => "while",
+            Token::Loop => "loop",
+            Token::Match => "match",
+            Token::Return => "return",
+            Token::Break => "break",
+            Token::Continue => "continue",
+            // literals
+            Token::Int(int) => return write!(f, "{}", int),
+            // identifiers
+            Token::Ident(ident) => return write!(f, "{}", ident),
+        };
+        write!(f, "{}", s)
+    }
+}
+
+fn lexer() -> impl Parser<char, Vec<Token>, Error = Simple<char>> {
+    let int_literal = text::int(10).from_str().unwrapped();
+
+    let char_escape = just('\\').ignore_then(one_of("nrt\\").map(|c| match c {
         'n' => '\n',
         'r' => '\r',
         't' => '\t',
@@ -119,48 +223,87 @@ fn ast_parser() -> impl Parser<char, Ast, Error = Simple<char>> {
     }));
 
     let char_literal = just('\'')
-        .ignore_then(none_of("'\\").or(escape_sequence))
+        .ignore_then(none_of("'\\").or(char_escape))
         .then_ignore(just('\''))
         .map(|c| c as usize);
 
-    let int = text::int(10)
-        .map(|s: String| s.parse::<usize>().unwrap())
-        .or(char_literal)
-        .padded();
+    let int = int_literal.or(char_literal).map(Token::Int);
+
+    let token = choice((
+        // delimiters
+        just("{").to(Token::OpenBrace),
+        just("}").to(Token::CloseBrace),
+        just("(").to(Token::OpenParen),
+        just(")").to(Token::CloseParen),
+        just(",").to(Token::Comma),
+        just(";").to(Token::Semi),
+        // operators
+        just("*").to(Token::Star),
+        just("!").to(Token::Bang),
+        just("=>").to(Token::Arrow),
+        just("=").to(Token::Eq),
+        just("+=").to(Token::PlusEq),
+        just("-=").to(Token::MinusEq),
+        // keywords
+        text::keyword("let").to(Token::Let),
+        text::keyword("mut").to(Token::Mut),
+        text::keyword("fn").to(Token::Fn),
+        text::keyword("if").to(Token::If),
+        text::keyword("else").to(Token::Else),
+        text::keyword("while").to(Token::While),
+        text::keyword("loop").to(Token::Loop),
+        text::keyword("match").to(Token::Match),
+        text::keyword("return").to(Token::Return),
+        text::keyword("break").to(Token::Break),
+        text::keyword("continue").to(Token::Continue),
+        // literals
+        int,
+        // identifiers
+        text::ident().map(Token::Ident),
+    ));
+
+    let comment = just("//").then(none_of('\n').repeated()).padded();
+
+    token.padded_by(comment.repeated()).padded().repeated()
+}
+
+#[allow(clippy::let_and_return)]
+fn parser() -> impl Parser<Token, Ast, Error = Simple<Token>> {
+    let ident = select! { Token::Ident(ident) => ident };
+
+    let r#deref = just(Token::Star).ignore_then(ident).map(Place::Deref);
+
+    let place = ident.map(Place::Var).or(r#deref);
+
+    let int = select! { Token::Int(int) => int };
 
     let simple_expr = place
+        .clone()
         .map(SimpleExpr::Place)
-        .or(int.clone().map(SimpleExpr::Int))
+        .or(int.map(SimpleExpr::Int))
         .map(Expr::Simple);
 
     let expr = recursive(|expr| {
         let call = ident
-            .then(just('!').or_not().map(|i| i.is_some()))
+            .then(just(Token::Bang).or_not().map(|i| i.is_some()))
             .then(
-                expr.separated_by(just(','))
+                expr.separated_by(just(Token::Comma))
                     .allow_trailing()
-                    .delimited_by(just('('), just(')'))
-                    .padded(),
+                    .delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
             )
-            .map(|((func, exclamation), args)| {
-                Expr::Call(CallExpr {
-                    func,
-                    exclamation,
-                    args,
-                })
-            });
+            .map(|((func, bang), args)| Expr::Call(CallExpr { func, bang, args }));
 
         let expr = call.or(simple_expr);
 
         expr
     });
 
-    let maybe_mut = text::keyword("mut").padded().or_not().map(|m| m.is_some());
+    let maybe_mut = just(Token::Mut).or_not().map(|m| m.is_some());
 
-    let r#let = text::keyword("let")
+    let r#let = just(Token::Let)
         .ignore_then(maybe_mut.clone())
         .then(ident)
-        .then_ignore(just('='))
+        .then_ignore(just(Token::Eq))
         .then(expr.clone())
         .map(|((mutable, name), value)| Statement::Let {
             decl: VarDecl { mutable, name },
@@ -169,21 +312,21 @@ fn ast_parser() -> impl Parser<char, Ast, Error = Simple<char>> {
 
     let assign = place
         .then(
-            just('=')
-                .map(|_| AssignMode::Replace)
-                .or(just("+=").map(|_| AssignMode::Add))
-                .or(just("-=").map(|_| AssignMode::Subtract)),
+            just(Token::Eq)
+                .to(AssignMode::Replace)
+                .or(just(Token::PlusEq).to(AssignMode::Add))
+                .or(just(Token::MinusEq).to(AssignMode::Subtract)),
         )
         .then(expr.clone())
         .map(|((place, mode), value)| Statement::Assign { place, value, mode });
 
-    let r#return = text::keyword("return")
+    let r#return = just(Token::Return)
         .ignore_then(expr.clone())
         .map(Statement::Return);
 
-    // TODO: only allow break and continue in loops
-    let r#break = text::keyword("break").map(|_| Statement::Break);
-    let r#continue = text::keyword("continue").map(|_| Statement::Continue);
+    let r#break = just(Token::Break).to(Statement::Break);
+
+    let r#continue = just(Token::Continue).to(Statement::Continue);
 
     let eval = expr.clone().map(Statement::Eval);
 
@@ -192,30 +335,24 @@ fn ast_parser() -> impl Parser<char, Ast, Error = Simple<char>> {
         .or(r#return)
         .or(r#break)
         .or(r#continue)
-        .or(eval)
-        .padded();
-
-    let semicolon = just(';').padded();
-    let comma = just(',').padded();
-    let lbrace = just('{').padded();
-    let rbrace = just('}').padded();
+        .or(eval);
 
     let block = recursive(|block| {
-        let if_else = text::keyword("if")
+        let if_else = just(Token::If)
             .ignore_then(expr.clone())
             .then(block.clone())
-            .then(text::keyword("else").ignore_then(block.clone()).or_not())
+            .then(just(Token::Else).ignore_then(block.clone()).or_not())
             .map(|((cond, main_body), else_body)| Statement::Switch {
                 cond,
                 cases: vec![(0, else_body.unwrap_or_default())],
                 default: main_body,
             });
 
-        let r#loop = text::keyword("loop")
+        let r#loop = just(Token::Loop)
             .ignore_then(block.clone())
             .map(|body| Statement::Loop { body });
 
-        let r#while = text::keyword("while")
+        let r#while = just(Token::While)
             .ignore_then(expr.clone())
             .then(block.clone())
             .map(|(cond, body)| Statement::Loop {
@@ -227,28 +364,26 @@ fn ast_parser() -> impl Parser<char, Ast, Error = Simple<char>> {
             });
 
         let statement_with_block = recursive(|statement_with_block| {
-            let arm = just("=>").padded().ignore_then(
+            let arm = just(Token::Arrow).ignore_then(
                 statement_without_block
                     .clone()
-                    .then_ignore(comma)
-                    .or(statement_with_block.then_ignore(comma.or_not()))
+                    .then_ignore(just(Token::Comma))
+                    .or(statement_with_block.then_ignore(just(Token::Comma).or_not()))
                     .map(Vec::from),
             );
 
-            let switch = text::keyword("match")
+            let switch = just(Token::Match)
                 .ignore_then(expr)
                 .then(
                     int.then(arm.clone())
                         .repeated()
-                        .padded()
                         .then(
-                            just('_')
-                                .padded()
+                            select! { Token::Ident(ident) if ident == "_" => ident }
                                 .ignore_then(arm)
                                 .or_not()
                                 .map(Option::unwrap_or_default),
                         )
-                        .delimited_by(lbrace, rbrace),
+                        .delimited_by(just(Token::OpenBrace), just(Token::CloseBrace)),
                 )
                 .map(|(cond, (cases, default))| Statement::Switch {
                     cond,
@@ -260,42 +395,39 @@ fn ast_parser() -> impl Parser<char, Ast, Error = Simple<char>> {
                 .or(r#loop)
                 .or(r#while)
                 .or(switch)
-                .or(block.map(|body| Statement::Block { body }))
-                .padded();
+                .or(block.map(|body| Statement::Block { body }));
 
             statement_with_block
         });
 
         let statement = statement_without_block
-            .then_ignore(semicolon)
-            .or(statement_with_block.then_ignore(semicolon.or_not()));
+            .then_ignore(just(Token::Semi))
+            .or(statement_with_block.then_ignore(just(Token::Semi).or_not()));
 
-        let block = statement.repeated().delimited_by(lbrace, rbrace).padded();
+        let block = statement
+            .repeated()
+            .delimited_by(just(Token::OpenBrace), just(Token::CloseBrace));
 
         block
     });
 
     let param = maybe_mut
         .then(ident)
-        // .then_ignore(just(':').padded())
-        // .then_ignore(just("usize").padded())
         .map(|(mutable, name)| VarDecl { mutable, name });
 
-    let function = text::keyword("fn")
+    let function = just(Token::Fn)
         .ignore_then(ident)
         .then(
             param
-                .separated_by(just(','))
+                .separated_by(just(Token::Comma))
                 .allow_trailing()
-                .delimited_by(just('('), just(')'))
-                .padded(),
+                .delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
         )
         .then(block)
         .map(|((name, params), body)| Function { name, params, body });
 
     let ast = function
         .repeated()
-        .padded()
         .then_ignore(end())
         .map(|functions| Ast { functions });
 
