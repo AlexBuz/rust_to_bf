@@ -69,7 +69,7 @@ fn push_imm(value: usize) -> [ir::Instruction; 2] {
 
 type FragId = usize;
 
-static INTRINSICS: &[&str] = &["getchar", "putchar", "print", "println"];
+static INTRINSICS: &[&str] = &["getchar", "putchar", "print", "println", "exit"];
 
 fn compile_intrinsic_call<'a>(
     name: &str,
@@ -138,6 +138,14 @@ fn compile_intrinsic_call<'a>(
             scope.global.frags[*cur_frag].push(ir::Instruction::Output {
                 src: ir::Value::Immediate(b'\n' as _),
             });
+            ir::Value::Immediate(0)
+        }
+        "exit" => {
+            if !args.is_empty() {
+                panic!("`exit` does not take any arguments");
+            }
+            scope.global.frags[*cur_frag].extend(push_imm(EXIT_FRAG));
+            *cur_frag = EXIT_FRAG;
             ir::Value::Immediate(0)
         }
         _ => {
@@ -261,13 +269,14 @@ struct GlobalState<'a> {
     func_bodies: BTreeMap<&'a str, &'a ast::Function>,
 }
 
+// frag 0 is the exit psuedo-fragment (it never actually gets executed due to the while loop)
 const EXIT_FRAG: FragId = 0;
 
 impl<'a> GlobalState<'a> {
     fn new(func_bodies: BTreeMap<&'a str, &'a ast::Function>) -> Self {
         Self {
-            frags: vec![vec![]], // frag 0 is the exit psuedo-fragment (it never actually gets executed due to the while loop)
-            func_ids: BTreeMap::from([("exit", 0)]),
+            frags: vec![vec![]],
+            func_ids: BTreeMap::new(),
             str_ids: BTreeMap::new(),
             func_bodies,
         }
@@ -526,18 +535,16 @@ fn compile_block<'a>(
     }
 }
 
-fn compile_func(name: &str, global_state: &mut GlobalState) -> Option<FragId> {
-    let func = global_state.func_bodies.get(name).copied()?;
-
-    if let Some(&func_id) = global_state.func_ids.get(func.name.as_str()) {
+fn compile_func<'a>(name: &'a str, global_state: &mut GlobalState<'a>) -> Option<FragId> {
+    if let Some(&func_id) = global_state.func_ids.get(name) {
         // function already compiled
         return Some(func_id);
     }
 
+    let func = global_state.func_bodies.get(name).copied()?;
+
     let block_start = global_state.frags.len();
-    global_state
-        .func_ids
-        .insert(func.name.as_str(), block_start);
+    global_state.func_ids.insert(name, block_start);
 
     let mut scope = Scope::new(global_state);
     for decl in &func.params {
