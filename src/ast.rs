@@ -1,7 +1,7 @@
 use chumsky::prelude::*;
 
-// TODO: Use a reference to a string instead of a string.
-pub type Ident = std::string::String;
+// TODO: Use a &str instead of a String
+pub type Ident = String;
 
 #[derive(Debug, Clone)]
 pub enum Place {
@@ -13,6 +13,7 @@ pub enum Place {
 #[derive(Debug, Clone)]
 pub enum SimpleExpr {
     Int(usize),
+    String(String),
     Place(Place),
 }
 
@@ -169,6 +170,7 @@ pub enum Token {
     Continue,
     // literals
     Int(usize),
+    String(String),
     // identifiers
     Ident(Ident),
 }
@@ -204,6 +206,7 @@ impl std::fmt::Display for Token {
             Token::Continue => "continue",
             // literals
             Token::Int(int) => return write!(f, "{}", int),
+            Token::String(string) => return write!(f, "\"{}\"", string),
             // identifiers
             Token::Ident(ident) => return write!(f, "{}", ident),
         };
@@ -212,52 +215,71 @@ impl std::fmt::Display for Token {
 }
 
 fn lexer() -> impl Parser<char, Vec<Token>, Error = Simple<char>> {
-    let int_literal = text::int(10).from_str().unwrapped();
-
-    let char_escape = just('\\').ignore_then(one_of("nrt\\").map(|c| match c {
+    let char_escape = just('\\').ignore_then(one_of("nrt\\\"'").map(|c| match c {
         'n' => '\n',
         'r' => '\r',
         't' => '\t',
         '\\' => '\\',
-        _ => panic!("Invalid escape sequence"),
+        '"' => '"',
+        '\'' => '\'',
+        _ => unreachable!("Invalid escape sequence"),
     }));
 
     let char_literal = just('\'')
-        .ignore_then(none_of("'\\").or(char_escape))
+        .ignore_then(none_of("'\\").or(char_escape.clone()))
         .then_ignore(just('\''))
         .map(|c| c as usize);
+
+    let string_literal = just('"')
+        .ignore_then(
+            none_of("\"\\")
+                .or(char_escape)
+                .repeated()
+                .map(|chars| chars.into_iter().collect::<String>()),
+        )
+        .then_ignore(just('"'))
+        .map(Token::String);
+
+    let int_literal = text::int(10).from_str().unwrapped();
 
     let int = int_literal.or(char_literal).map(Token::Int);
 
     let token = choice((
         // delimiters
-        just("{").to(Token::OpenBrace),
-        just("}").to(Token::CloseBrace),
-        just("(").to(Token::OpenParen),
-        just(")").to(Token::CloseParen),
-        just(",").to(Token::Comma),
-        just(";").to(Token::Semi),
+        choice([
+            just("{").to(Token::OpenBrace),
+            just("}").to(Token::CloseBrace),
+            just("(").to(Token::OpenParen),
+            just(")").to(Token::CloseParen),
+            just(",").to(Token::Comma),
+            just(";").to(Token::Semi),
+        ]),
         // operators
-        just("*").to(Token::Star),
-        just("!").to(Token::Bang),
-        just("=>").to(Token::Arrow),
-        just("=").to(Token::Eq),
-        just("+=").to(Token::PlusEq),
-        just("-=").to(Token::MinusEq),
+        choice([
+            just("*").to(Token::Star),
+            just("!").to(Token::Bang),
+            just("=>").to(Token::Arrow),
+            just("=").to(Token::Eq),
+            just("+=").to(Token::PlusEq),
+            just("-=").to(Token::MinusEq),
+        ]),
         // keywords
-        text::keyword("let").to(Token::Let),
-        text::keyword("mut").to(Token::Mut),
-        text::keyword("fn").to(Token::Fn),
-        text::keyword("if").to(Token::If),
-        text::keyword("else").to(Token::Else),
-        text::keyword("while").to(Token::While),
-        text::keyword("loop").to(Token::Loop),
-        text::keyword("match").to(Token::Match),
-        text::keyword("return").to(Token::Return),
-        text::keyword("break").to(Token::Break),
-        text::keyword("continue").to(Token::Continue),
+        choice([
+            text::keyword("let").to(Token::Let),
+            text::keyword("mut").to(Token::Mut),
+            text::keyword("fn").to(Token::Fn),
+            text::keyword("if").to(Token::If),
+            text::keyword("else").to(Token::Else),
+            text::keyword("while").to(Token::While),
+            text::keyword("loop").to(Token::Loop),
+            text::keyword("match").to(Token::Match),
+            text::keyword("return").to(Token::Return),
+            text::keyword("break").to(Token::Break),
+            text::keyword("continue").to(Token::Continue),
+        ]),
         // literals
         int,
+        string_literal,
         // identifiers
         text::ident().map(Token::Ident),
     ));
@@ -277,10 +299,13 @@ fn parser() -> impl Parser<Token, Ast, Error = Simple<Token>> {
 
     let int = select! { Token::Int(int) => int };
 
+    let string = select! { Token::String(string) => string };
+
     let simple_expr = place
         .clone()
         .map(SimpleExpr::Place)
         .or(int.map(SimpleExpr::Int))
+        .or(string.map(SimpleExpr::String))
         .map(Expr::Simple);
 
     let expr = recursive(|expr| {
