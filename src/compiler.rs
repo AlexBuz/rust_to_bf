@@ -1,6 +1,7 @@
-use crate::{ast, ir};
-use core::panic;
-use std::collections::BTreeMap;
+use {
+    crate::{ast, ir},
+    std::{cmp::Ordering::*, collections::BTreeMap},
+};
 
 #[derive(Debug, Clone, Copy)]
 struct Var<'a> {
@@ -99,7 +100,7 @@ fn compile_intrinsic_call<'a>(
             for arg in args {
                 let src = compile_expr(arg, scope, cur_frag);
                 scope.global.frags[*cur_frag].push(ir::Instruction::Output { src });
-                scope.truncate(frame_size, *cur_frag);
+                scope.shrink_frame(frame_size, *cur_frag);
             }
             ir::Value::Immediate(0)
         }
@@ -110,11 +111,11 @@ fn compile_intrinsic_call<'a>(
             for arg in args {
                 match arg {
                     ast::Expr::Simple(ast::SimpleExpr::String(s)) => {
-                        for char in s.bytes() {
-                            scope.global.frags[*cur_frag].push(ir::Instruction::Output {
-                                src: ir::Value::Immediate(char as _),
-                            });
-                        }
+                        scope.global.frags[*cur_frag].extend(s.bytes().map(|byte| {
+                            ir::Instruction::Output {
+                                src: ir::Value::Immediate(byte as _),
+                            }
+                        }));
                     }
                     _ => {
                         let return_frag = scope
@@ -320,21 +321,35 @@ impl<'a, 'b> Scope<'a, 'b> {
         self.frame_offset += 1;
     }
 
-    fn truncate(&mut self, target_frame_size: usize, cur_frag: FragId) {
-        if target_frame_size < self.frame_offset {
-            self.global.frags[cur_frag].push(ir::Instruction::ShrinkStack {
-                amount: self.frame_offset - target_frame_size,
-            });
-            self.vars.truncate(
-                self.vars
-                    .iter()
-                    .rev()
-                    .position(|var| var.frame_offset < target_frame_size)
-                    .map(|pos| self.vars.len() - pos)
-                    .unwrap_or(0),
-            );
+    fn shrink_frame_early(&mut self, target_frame_size: usize, cur_frag: FragId) {
+        match target_frame_size.cmp(&self.frame_offset) {
+            Less => {
+                self.global.frags[cur_frag].push(ir::Instruction::ShrinkStack {
+                    amount: self.frame_offset - target_frame_size,
+                });
+            }
+            Equal => {}
+            Greater => unreachable!("Cannot shrink_frame_early to a larger size"),
         }
-        self.frame_offset = target_frame_size;
+    }
+
+    fn shrink_frame(&mut self, target_frame_size: usize, cur_frag: FragId) {
+        match target_frame_size.cmp(&self.frame_offset) {
+            Less => {
+                self.shrink_frame_early(target_frame_size, cur_frag);
+                self.vars.truncate(
+                    self.vars
+                        .iter()
+                        .rev()
+                        .position(|var| var.frame_offset < target_frame_size)
+                        .map(|pos| self.vars.len() - pos)
+                        .unwrap_or(0),
+                );
+                self.frame_offset = target_frame_size;
+            }
+            Equal => {}
+            Greater => unreachable!("Cannot shrink_frame to a larger size"),
+        }
     }
 }
 
@@ -424,7 +439,7 @@ fn compile_block<'a>(
                     .loop_stack
                     .last()
                     .expect("`continue` may only be used inside a loop");
-                scope.truncate(frame_size, cur_frag);
+                scope.shrink_frame_early(frame_size, cur_frag);
                 scope.global.frags[cur_frag].extend(push_imm(start));
                 cur_frag = EXIT_FRAG;
                 break;
@@ -436,7 +451,7 @@ fn compile_block<'a>(
                     .loop_stack
                     .last()
                     .expect("`break` may only be used inside a loop");
-                scope.truncate(frame_size, cur_frag);
+                scope.shrink_frame_early(frame_size, cur_frag);
                 scope.global.frags[cur_frag].extend(push_imm(after));
                 cur_frag = EXIT_FRAG;
                 break;
@@ -503,32 +518,25 @@ fn compile_block<'a>(
             ast::Statement::Block { body } => execute_block(body, scope, &mut cur_frag),
             ast::Statement::Return(value) => {
                 let src = compile_expr(value, scope, &mut cur_frag);
-                scope.global.frags[cur_frag].extend([
-                    ir::Instruction::Move {
-                        dst: ir::Place::Direct(ir::DirectPlace::StackTop {
-                            offset: scope.frame_offset + 1,
-                        }),
-                        src,
-                        store_mode: ir::StoreMode::Add,
-                    },
-                    ir::Instruction::ShrinkStack {
-                        // clear the rest of the frame, since the truncation will only clear down to
-                        // final_frame_size (which may be greater than 0 if this is a nested block)
-                        amount: final_frame_size,
-                    },
-                ]);
-                scope.truncate(final_frame_size, cur_frag);
+                scope.global.frags[cur_frag].push(ir::Instruction::Move {
+                    dst: ir::Place::Direct(ir::DirectPlace::StackTop {
+                        offset: scope.frame_offset + 1,
+                    }),
+                    src,
+                    store_mode: ir::StoreMode::Add,
+                });
+                scope.shrink_frame_early(0, cur_frag);
                 cur_frag = EXIT_FRAG;
                 break;
             }
             ast::Statement::Eval(expr) => {
                 let frame_size = scope.frame_offset;
                 compile_expr(expr, scope, &mut cur_frag);
-                scope.truncate(frame_size, cur_frag);
+                scope.shrink_frame(frame_size, cur_frag);
             }
         }
     }
-    scope.truncate(final_frame_size, cur_frag);
+    scope.shrink_frame(final_frame_size, cur_frag);
     CompiledBlock {
         start: start_frag,
         end: cur_frag,
