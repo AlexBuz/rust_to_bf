@@ -1,9 +1,13 @@
-use crate::macros::{indented_print, indented_println};
-use std::io::{Read, Write};
+use {
+    crate::common::{indented_print, indented_println},
+    derive_more::Display,
+    std::io::{Read, Write},
+};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Display)]
 pub enum DirectPlace {
     // TODO: split this into StackTop { offset_down: usize } and Stack { offset: usize }
+    #[display("stack[{offset}]")]
     StackTop { offset: usize },
     // TODO: Heap { address: usize },
 }
@@ -19,17 +23,10 @@ impl DirectPlace {
     }
 }
 
-impl std::fmt::Display for DirectPlace {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            DirectPlace::StackTop { offset } => write!(f, "stack[{offset}]"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Display)]
 pub enum IndirectPlace {
     // TODO: Stack { address: DirectPlace },
+    #[display("heap[{address}]")]
     Heap { address: DirectPlace },
 }
 
@@ -47,15 +44,7 @@ impl IndirectPlace {
     }
 }
 
-impl std::fmt::Display for IndirectPlace {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            IndirectPlace::Heap { address } => write!(f, "heap[{address}]"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Display)]
 pub enum Place {
     Direct(DirectPlace),
     Indirect(IndirectPlace),
@@ -70,16 +59,7 @@ impl Place {
     }
 }
 
-impl std::fmt::Display for Place {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Place::Direct(place) => write!(f, "{}", place),
-            Place::Indirect(place) => write!(f, "{}", place),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Display)]
 pub enum Value {
     Immediate(usize),
     Deref(Place),
@@ -94,30 +74,14 @@ impl Value {
     }
 }
 
-impl std::fmt::Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Value::Immediate(value) => write!(f, "{}", value),
-            Value::Deref(place) => write!(f, "{}", place),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Display)]
 pub enum StoreMode {
-    Replace,
+    #[display("+=")]
     Add,
+    #[display("-=")]
     Subtract,
-}
-
-impl std::fmt::Display for StoreMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            StoreMode::Replace => write!(f, "="),
-            StoreMode::Add => write!(f, "+="),
-            StoreMode::Subtract => write!(f, "-="),
-        }
-    }
+    #[display("=")]
+    Replace,
 }
 
 #[allow(unused)]

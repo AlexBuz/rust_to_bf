@@ -1,5 +1,7 @@
-use chumsky::prelude::*;
-use derive_more::{Display, From};
+use {
+    chumsky::prelude::*,
+    derive_more::{Display, From},
+};
 
 // TODO: Use a &str instead of a String
 pub type Ident = String;
@@ -34,9 +36,9 @@ pub enum Expr {
 
 #[derive(Debug, Clone, Copy)]
 pub enum AssignMode {
-    Replace,
     Add,
     Subtract,
+    Replace,
 }
 
 #[derive(Debug, Clone)]
@@ -121,13 +123,34 @@ pub enum Token {
     CloseParen,
     Comma,
     Semi,
-    // operators
-    Star,
-    Bang,
+    // arrow operator
     Arrow,
-    Eq,
+    // relational operators
+    LtEq,
+    Lt,
+    GtEq,
+    Gt,
+    EqEq,
+    BangEq,
+    // assignment operators
     PlusEq,
     MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
+    AndAndEq,
+    OrOrEq,
+    Eq,
+    // logical operators
+    AndAnd,
+    OrOr,
+    Bang,
+    // arithmetic operators
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
     // keywords
     Let,
     Mut,
@@ -182,12 +205,34 @@ fn lexer() -> impl Parser<char, Vec<Token>, Error = Simple<char>> {
     ]);
 
     let operator = choice([
-        just("*").to(Token::Star),
-        just("!").to(Token::Bang),
+        // arrow operator
         just("=>").to(Token::Arrow),
-        just("=").to(Token::Eq),
+        // relational operators
+        just("<=").to(Token::LtEq),
+        just("<").to(Token::Lt),
+        just(">=").to(Token::GtEq),
+        just(">").to(Token::Gt),
+        just("==").to(Token::EqEq),
+        just("!=").to(Token::BangEq),
+        // assignment operators
         just("+=").to(Token::PlusEq),
         just("-=").to(Token::MinusEq),
+        just("*=").to(Token::StarEq),
+        just("/=").to(Token::SlashEq),
+        just("%=").to(Token::PercentEq),
+        just("&&=").to(Token::AndAndEq),
+        just("||=").to(Token::OrOrEq),
+        just("=").to(Token::Eq),
+        // logical operators
+        just("&&").to(Token::AndAnd),
+        just("||").to(Token::OrOr),
+        just("!").to(Token::Bang),
+        // arithmetic operators
+        just("+").to(Token::Plus),
+        just("-").to(Token::Minus),
+        just("*").to(Token::Star),
+        just("/").to(Token::Slash),
+        just("%").to(Token::Percent),
     ]);
 
     let keyword = choice([
@@ -240,15 +285,108 @@ fn parser() -> impl Parser<Token, Ast, Error = Simple<Token>> {
         let call = ident
             .then(just(Token::Bang).or_not().map(|i| i.is_some()))
             .then(
-                expr.separated_by(just(Token::Comma))
+                expr.clone()
+                    .separated_by(just(Token::Comma))
                     .allow_trailing()
                     .delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
             )
             .map(|((func, bang), args)| Expr::Call(CallExpr { func, bang, args }));
 
-        let expr = call.or(simple_expr);
+        let atom = call
+            .or(simple_expr)
+            .or(expr.delimited_by(just(Token::OpenParen), just(Token::CloseParen)));
 
-        expr
+        let prec0 = just(Token::Bang)
+            .to("!")
+            .repeated()
+            .then(atom)
+            .foldr(|op, expr| {
+                Expr::Call(CallExpr {
+                    func: op.to_string(),
+                    bang: false,
+                    args: vec![expr],
+                })
+            });
+
+        let prec1 = prec0
+            .clone()
+            .then(
+                (choice([
+                    just(Token::Star).to("*"),
+                    just(Token::Slash).to("/"),
+                    just(Token::Percent).to("%"),
+                ]))
+                .then(prec0)
+                .repeated(),
+            )
+            .foldl(|lhs, (op, rhs)| {
+                Expr::Call(CallExpr {
+                    func: op.to_string(),
+                    bang: false,
+                    args: vec![lhs, rhs],
+                })
+            });
+
+        let prec2 = prec1
+            .clone()
+            .then(
+                (choice([just(Token::Plus).to("+"), just(Token::Minus).to("-")]))
+                    .then(prec1)
+                    .repeated(),
+            )
+            .foldl(|lhs, (op, rhs)| {
+                Expr::Call(CallExpr {
+                    func: op.to_string(),
+                    bang: false,
+                    args: vec![lhs, rhs],
+                })
+            });
+
+        let prec3 = prec2
+            .clone()
+            .then(
+                (choice([
+                    just(Token::LtEq).to("<="),
+                    just(Token::Lt).to("<"),
+                    just(Token::GtEq).to(">="),
+                    just(Token::Gt).to(">"),
+                    just(Token::EqEq).to("=="),
+                    just(Token::BangEq).to("!="),
+                ]))
+                .then(prec2)
+                .or_not(),
+            )
+            .foldl(|lhs, (op, rhs)| {
+                Expr::Call(CallExpr {
+                    func: op.to_string(),
+                    bang: false,
+                    args: vec![lhs, rhs],
+                })
+            });
+
+        let prec4 = prec3
+            .clone()
+            .then(just(Token::AndAnd).to("&&").then(prec3).repeated())
+            .foldl(|lhs, (op, rhs)| {
+                Expr::Call(CallExpr {
+                    func: op.to_string(),
+                    bang: true,
+                    args: vec![lhs, rhs],
+                })
+            });
+
+        let prec5 = prec4
+            .clone()
+            .then(just(Token::OrOr).to("||").then(prec4).repeated())
+            .foldl(|lhs, (op, rhs)| {
+                Expr::Call(CallExpr {
+                    func: op.to_string(),
+                    bang: true,
+                    args: vec![lhs, rhs],
+                })
+            });
+
+        prec5
     });
 
     let maybe_mut = just(Token::Mut).or_not().map(|m| m.is_some());
@@ -263,15 +401,67 @@ fn parser() -> impl Parser<Token, Ast, Error = Simple<Token>> {
             value,
         });
 
-    let assign = place
-        .then(
-            just(Token::Eq)
-                .to(AssignMode::Replace)
-                .or(just(Token::PlusEq).to(AssignMode::Add))
-                .or(just(Token::MinusEq).to(AssignMode::Subtract)),
-        )
+    let primitive_assign = place
+        .clone()
+        .then(choice([
+            just(Token::PlusEq).to(AssignMode::Add),
+            just(Token::MinusEq).to(AssignMode::Subtract),
+            just(Token::Eq).to(AssignMode::Replace),
+        ]))
         .then(expr.clone())
         .map(|((place, mode), value)| Statement::Assign { place, value, mode });
+
+    let arithmetic_assign = place
+        .clone()
+        .then(choice([
+            just(Token::StarEq).to("*"),
+            just(Token::SlashEq).to("/"),
+            just(Token::PercentEq).to("%"),
+        ]))
+        .then(expr.clone())
+        .map(|((place, op), value)| Statement::Assign {
+            place: place.clone(),
+            value: Expr::Call(CallExpr {
+                func: op.to_string(),
+                bang: false,
+                args: vec![Expr::Simple(SimpleExpr::Place(place)), value],
+            }),
+            mode: AssignMode::Replace,
+        });
+
+    #[derive(Clone)]
+    enum ShortCircuitOp {
+        And,
+        Or,
+    }
+
+    let short_circuit_assign = place
+        .then(choice([
+            just(Token::AndAndEq).to(ShortCircuitOp::And),
+            just(Token::OrOrEq).to(ShortCircuitOp::Or),
+        ]))
+        .then(expr.clone())
+        .map(|((place, op), value)| {
+            let [short_circuit, long_circuit] = [
+                vec![],
+                vec![Statement::Assign {
+                    place: place.clone(),
+                    value,
+                    mode: AssignMode::Replace,
+                }],
+            ];
+            let [false_case, true_case] = match op {
+                ShortCircuitOp::And => [short_circuit, long_circuit],
+                ShortCircuitOp::Or => [long_circuit, short_circuit],
+            };
+            Statement::Switch {
+                cond: Expr::Simple(SimpleExpr::Place(place)),
+                cases: vec![(0, false_case)],
+                default: true_case,
+            }
+        });
+
+    let assign = choice((primitive_assign, arithmetic_assign, short_circuit_assign));
 
     let r#return = just(Token::Return)
         .ignore_then(expr.clone())

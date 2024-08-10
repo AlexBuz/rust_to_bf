@@ -1,13 +1,15 @@
 mod ast;
 mod bf;
+mod common;
 mod compiler;
 mod ir;
-mod macros;
 
-use clap::{Parser, ValueEnum};
-use ir::Program;
-use macros::debug_println;
-use std::sync::atomic::{AtomicBool, Ordering};
+use {
+    clap::{Parser, ValueEnum},
+    common::debug_println,
+    ir::Program,
+    std::sync::atomic::{AtomicBool, Ordering},
+};
 
 static DEBUG: AtomicBool = AtomicBool::new(false);
 

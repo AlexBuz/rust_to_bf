@@ -1,5 +1,6 @@
 use {
     crate::{
+        common::debug_println,
         ir::{
             DirectPlace::{self, *},
             IndirectPlace::{self, *},
@@ -9,7 +10,6 @@ use {
             Program, StoreMode,
             Value::*,
         },
-        macros::debug_println,
     },
     std::{
         borrow::Cow,
@@ -57,14 +57,14 @@ impl DirectPlace {
         let (sb_to_dst, dst_to_sb) = self.path_to_and_from();
 
         let operator = match mode {
+            StoreMode::Add => "+",
+            StoreMode::Subtract => "-",
             StoreMode::Replace => {
                 output.push_str(&sb_to_dst);
                 output.push_str("[-]");
                 output.push_str(&dst_to_sb);
                 "+"
             }
-            StoreMode::Add => "+",
-            StoreMode::Subtract => "-",
         };
 
         // move the value to the destination register
@@ -141,12 +141,12 @@ impl IndirectPlace {
                 output.push_str(&sb_to_place);
 
                 let operator = match mode {
+                    StoreMode::Add => "+",
+                    StoreMode::Subtract => "-",
                     StoreMode::Replace => {
                         output.push_str("[-]");
                         "+"
                     }
-                    StoreMode::Add => "+",
-                    StoreMode::Subtract => "-",
                 };
 
                 // move the value from reg0 to the heap cell

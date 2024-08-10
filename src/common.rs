@@ -16,18 +16,18 @@ macro_rules! debug_println {
 
 macro_rules! indented_print {
     ($depth:expr, $($arg:tt)*) => {
-        $crate::macros::debug_print!("{:width$}", "", width = $depth * 4);
-        $crate::macros::debug_print!($($arg)*);
+        $crate::common::debug_print!("{:width$}", "", width = $depth * 4);
+        $crate::common::debug_print!($($arg)*);
     };
 }
 
 macro_rules! indented_println {
     ($depth:expr, $($arg:tt)*) => {
-        $crate::macros::debug_print!("{:width$}", "", width = $depth * 4);
-        $crate::macros::debug_println!($($arg)*);
+        $crate::common::debug_print!("{:width$}", "", width = $depth * 4);
+        $crate::common::debug_println!($($arg)*);
     };
     () => {
-        $crate::macros::debug_println!();
+        $crate::common::debug_println!();
     };
 }
 

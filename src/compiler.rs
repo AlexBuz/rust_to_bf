@@ -1,6 +1,6 @@
 use {
     crate::{ast, ir},
-    std::{cmp::Ordering::*, collections::BTreeMap},
+    std::{cmp::Ordering::*, collections::BTreeMap, sync::LazyLock},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -149,6 +149,42 @@ fn compile_intrinsic_call<'a>(
             *cur_frag = EXIT_FRAG;
             ir::Value::Immediate(0)
         }
+        "&&" | "||" => {
+            if args.len() != 2 {
+                panic!("`{name}` requires exactly two arguments");
+            }
+
+            let short_circuit = scope
+                .global
+                .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
+
+            let long_circuit = scope
+                .global
+                .add_frag(vec![ir::Instruction::ShrinkStack { amount: 2 }]);
+
+            compile_expr_and_push(&args[0], scope, cur_frag);
+
+            let [false_circuit, true_circuit] = match name {
+                "&&" => [short_circuit, long_circuit],
+                "||" => [long_circuit, short_circuit],
+                _ => unreachable!("The only short-circuiting operators are `&&` and `||`"),
+            };
+
+            scope.global.frags[*cur_frag].extend([ir::Instruction::Switch {
+                cond: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
+                cases: vec![push_imm(false_circuit).to_vec()],
+                default: push_imm(true_circuit).to_vec(),
+            }]);
+
+            *cur_frag = long_circuit;
+            scope.frame_offset -= 1;
+            compile_expr_and_push(&args[1], scope, cur_frag);
+            scope.global.frags[*cur_frag].extend(push_imm(short_circuit));
+
+            *cur_frag = short_circuit;
+
+            ir::Value::Deref(ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }))
+        }
         _ => {
             if scope.global.func_bodies.contains_key(name) {
                 panic!("Function `{name}` must be called without `!`");
@@ -257,9 +293,9 @@ fn compile_expr_and_push<'a>(
 
 fn compile_store_mode(mode: ast::AssignMode) -> ir::StoreMode {
     match mode {
-        ast::AssignMode::Replace => ir::StoreMode::Replace,
         ast::AssignMode::Add => ir::StoreMode::Add,
         ast::AssignMode::Subtract => ir::StoreMode::Subtract,
+        ast::AssignMode::Replace => ir::StoreMode::Replace,
     }
 }
 
@@ -574,7 +610,34 @@ fn compile_func<'a>(name: &'a str, global_state: &mut GlobalState<'a>) -> Option
     Some(block_start)
 }
 
-pub fn compile(ast: ast::Ast) -> ir::Program {
+static STD: LazyLock<ast::Ast> = LazyLock::new(|| {
+    let src = include_str!("std.bs");
+    let mut ast = ast::Ast::parse(src).expect("Failed to parse standard library");
+    for func in &mut ast.functions {
+        let op = match func.name.as_str() {
+            "add" => "+",
+            "sub" => "-",
+            "mul" => "*",
+            "div" => "/",
+            "mod" => "%",
+            "eq" => "==",
+            "ne" => "!=",
+            "lt" => "<",
+            "le" => "<=",
+            "gt" => ">",
+            "ge" => ">=",
+            "not" => "!",
+            _ => continue,
+        };
+        func.name.clear();
+        func.name.push_str(op);
+    }
+    ast
+});
+
+pub fn compile(mut ast: ast::Ast) -> ir::Program {
+    ast.functions.extend(STD.functions.iter().cloned());
+
     let functions = ast
         .functions
         .iter()

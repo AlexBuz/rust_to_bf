@@ -1,0 +1,152 @@
+fn add(mut a, b) {
+    a += b;
+    return a;
+}
+
+fn sub(mut a, b) {
+    a -= b;
+    return a;
+}
+
+fn mul(mut a, b) {
+    let mut result = 0;
+    while a {
+        a -= 1;
+        result += b;
+    }
+    return result;
+}
+
+fn div(mut dividend, divisor) {
+    let mut remainder = divisor;
+    let mut quotient = 0;
+    while dividend {
+        dividend -= 1;
+        match remainder {
+            0 => {
+                remainder = divisor;
+                quotient += 1;
+            }
+        }
+        remainder -= 1;
+    }
+    if remainder {
+        let temp = remainder;
+        remainder = divisor;
+        remainder -= temp;
+    } else {
+        quotient += 1;
+    }
+    return quotient;
+}
+
+fn mod(mut dividend, divisor) {
+    let mut remainder = divisor;
+    let mut quotient = 0;
+    while dividend {
+        dividend -= 1;
+        match remainder {
+            0 => {
+                remainder = divisor;
+                quotient += 1;
+            }
+        }
+        remainder -= 1;
+    }
+    if remainder {
+        let temp = remainder;
+        remainder = divisor;
+        remainder -= temp;
+    } else {
+        quotient += 1;
+    }
+    return remainder;
+}
+
+fn eq(mut a, mut b) {
+    while a {
+        a -= 1;
+        if b {
+            b -= 1;
+        } else {
+            return 0;
+        }
+    }
+    if b {
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
+fn ne(mut a, mut b) {
+    while a {
+        a -= 1;
+        if b {
+            b -= 1;
+        } else {
+            return 1;
+        }
+    }
+    if b {
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+fn lt(mut a, mut b) {
+    while b {
+        b -= 1;
+        if a {
+            a -= 1;
+        } else {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+fn le(mut a, mut b) {
+    while a {
+        a -= 1;
+        if b {
+            b -= 1;
+        } else {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+fn gt(mut a, mut b) {
+    while a {
+        a -= 1;
+        if b {
+            b -= 1;
+        } else {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+fn ge(mut a, mut b) {
+    while b {
+        b -= 1;
+        if a {
+            a -= 1;
+        } else {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+fn not(a) {
+    if a {
+        return 0;
+    } else {
+        return 1;
+    }
+}
