@@ -63,32 +63,18 @@ fn mod(mut dividend, divisor) {
     return remainder;
 }
 
-fn eq(mut a, mut b) {
-    while a {
-        a -= 1;
-        if b {
-            b -= 1;
-        } else {
-            return 0;
-        }
-    }
-    if b {
+fn eq(mut a, b) {
+    a -= b;
+    if a {
         return 0;
     } else {
         return 1;
     }
 }
 
-fn ne(mut a, mut b) {
-    while a {
-        a -= 1;
-        if b {
-            b -= 1;
-        } else {
-            return 1;
-        }
-    }
-    if b {
+fn ne(mut a, b) {
+    a -= b;
+    if a {
         return 1;
     } else {
         return 0;
