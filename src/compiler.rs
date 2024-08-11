@@ -70,7 +70,14 @@ fn push_imm(value: usize) -> [ir::Instruction; 2] {
 
 type FragId = usize;
 
-static INTRINSICS: &[&str] = &["getchar", "putchar", "print", "println", "exit"];
+static INTRINSICS: &[&str] = &[
+    "read_char",
+    "print_char",
+    "print",
+    "println",
+    "printf",
+    "exit",
+];
 
 fn compile_intrinsic_call<'a>(
     name: &str,
@@ -79,9 +86,9 @@ fn compile_intrinsic_call<'a>(
     cur_frag: &mut FragId,
 ) -> ir::Value {
     match name {
-        "getchar" => {
+        "read_char" => {
             if !args.is_empty() {
-                panic!("`getchar` does not take any arguments");
+                panic!("`{name}` does not take any arguments");
             }
             scope.global.frags[*cur_frag].extend([
                 ir::Instruction::GrowStack { amount: 1 },
@@ -92,21 +99,21 @@ fn compile_intrinsic_call<'a>(
             scope.frame_offset += 1;
             ir::Value::Deref(ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }))
         }
-        "putchar" => {
+        "print_char" => {
             if args.is_empty() {
-                panic!("`putchar` requires at least one argument");
+                panic!("`{name}` requires at least 1 argument");
             }
             let frame_size = scope.frame_offset;
             for arg in args {
                 let src = compile_expr(arg, scope, cur_frag);
                 scope.global.frags[*cur_frag].push(ir::Instruction::Output { src });
-                scope.shrink_frame(frame_size, *cur_frag);
             }
+            scope.shrink_frame(frame_size, *cur_frag);
             ir::Value::Immediate(0)
         }
         "print" => {
             if args.is_empty() {
-                panic!("`print` requires at least one argument");
+                panic!("`{name}` requires at least 1 argument");
             }
             for arg in args {
                 match arg {
@@ -141,18 +148,61 @@ fn compile_intrinsic_call<'a>(
             });
             ir::Value::Immediate(0)
         }
+        "printf" => {
+            let Some((first_arg, mut args)) = args.split_first() else {
+                panic!("`{name}` requires at least 1 argument");
+            };
+            let format_string = match first_arg {
+                ast::Expr::Simple(ast::SimpleExpr::String(s)) => s,
+                _ => panic!("First argument to `{name}` must be a string literal"),
+            };
+            let mut format_chars = format_string.bytes();
+            let frame_size = scope.frame_offset;
+            while let Some(c) = format_chars.next() {
+                if c == b'%' {
+                    let Some(format_specifier) = format_chars.next() else {
+                        panic!("Unterminated format specifier");
+                    };
+                    if format_specifier == b'%' {
+                        scope.global.frags[*cur_frag].push(ir::Instruction::Output {
+                            src: ir::Value::Immediate(b'%' as _),
+                        });
+                        continue;
+                    }
+                    let Some((arg, rest)) = args.split_at_checked(1) else {
+                        panic!("Not enough arguments for format string `{format_string}`")
+                    };
+                    args = rest;
+                    match format_specifier {
+                        b'c' => compile_intrinsic_call("print_char", arg, scope, cur_frag),
+                        b's' => compile_intrinsic_call("print", arg, scope, cur_frag),
+                        b'd' => compile_func_call("print_int", arg, scope, cur_frag),
+                        _ => panic!("Invalid format specifier"),
+                    };
+                } else {
+                    scope.global.frags[*cur_frag].push(ir::Instruction::Output {
+                        src: ir::Value::Immediate(c as _),
+                    });
+                }
+            }
+            scope.shrink_frame(frame_size, *cur_frag);
+            if !args.is_empty() {
+                panic!("Too many arguments for format string `{format_string}`");
+            }
+            ir::Value::Immediate(0)
+        }
         "exit" => {
             if !args.is_empty() {
-                panic!("`exit` does not take any arguments");
+                panic!("`{name}` does not take any arguments");
             }
             scope.global.frags[*cur_frag].extend(push_imm(EXIT_FRAG));
             *cur_frag = EXIT_FRAG;
             ir::Value::Immediate(0)
         }
         "&&" | "||" => {
-            if args.len() != 2 {
-                panic!("`{name}` requires exactly two arguments");
-            }
+            let Some(([lhs, rhs], [])) = args.split_first_chunk() else {
+                panic!("`{name}` requires exactly 2 arguments");
+            };
 
             let short_circuit = scope
                 .global
@@ -162,7 +212,7 @@ fn compile_intrinsic_call<'a>(
                 .global
                 .add_frag(vec![ir::Instruction::ShrinkStack { amount: 2 }]);
 
-            compile_expr_and_push(&args[0], scope, cur_frag);
+            compile_expr_and_push(lhs, scope, cur_frag);
 
             let [false_circuit, true_circuit] = match name {
                 "&&" => [short_circuit, long_circuit],
@@ -178,7 +228,7 @@ fn compile_intrinsic_call<'a>(
 
             *cur_frag = long_circuit;
             scope.frame_offset -= 1;
-            compile_expr_and_push(&args[1], scope, cur_frag);
+            compile_expr_and_push(rhs, scope, cur_frag);
             scope.global.frags[*cur_frag].extend(push_imm(short_circuit));
 
             *cur_frag = short_circuit;
@@ -196,11 +246,19 @@ fn compile_intrinsic_call<'a>(
 }
 
 fn compile_func_call<'a>(
-    call_frag: FragId,
+    name: &'a str,
     args: &'a [ast::Expr],
     scope: &mut Scope<'a, '_>,
     cur_frag: &mut FragId,
 ) -> ir::Value {
+    let Some(call_frag) = compile_func(name, scope.global) else {
+        if INTRINSICS.contains(&name) {
+            panic!("Intrinsic `{name}` must be called with `!`");
+        } else {
+            panic!("Function `{name}` not defined");
+        }
+    };
+
     // Stack order: [return value, return address, arguments, local variables]
     // The caller leaves space for the return value and pushes the return address and arguments
     // The callee is responsible for popping the arguments before returning
@@ -240,14 +298,7 @@ fn compile_call<'a>(
     if call.bang {
         compile_intrinsic_call(name, &call.args, scope, cur_frag)
     } else {
-        let Some(call_frag) = compile_func(name, scope.global) else {
-            if INTRINSICS.contains(&name) {
-                panic!("Intrinsic `{name}` must be called with `!`");
-            } else {
-                panic!("Function `{name}` not defined");
-            }
-        };
-        compile_func_call(call_frag, &call.args, scope, cur_frag)
+        compile_func_call(name, &call.args, scope, cur_frag)
     }
 }
 

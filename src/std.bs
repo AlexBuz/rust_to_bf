@@ -136,3 +136,46 @@ fn not(a) {
         return 1;
     }
 }
+
+fn print_int(mut num) {
+    let divisor = 10;
+    let mut remainder = divisor;
+    let mut quotient = 0;
+    while num {
+        num -= 1;
+        match remainder {
+            0 => {
+                remainder = divisor;
+                quotient += 1;
+            }
+        }
+        remainder -= 1;
+    }
+    if remainder {
+        let temp = remainder;
+        remainder = divisor;
+        remainder -= temp;
+    } else {
+        quotient += 1;
+    }
+    if quotient {
+        print_int(quotient);
+    }
+    remainder += 48;
+    print_char!(remainder);
+}
+
+fn read_int() {
+    let mut c = 0;
+    let mut num = 0;
+    loop {
+        c = read_char!();
+        if c == '\n' {
+            break;
+        }
+        c -= 48;
+        num *= 10;
+        num += c;
+    }
+    return num;
+}
