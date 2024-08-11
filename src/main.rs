@@ -3,6 +3,8 @@ mod bf;
 mod common;
 mod compiler;
 mod ir;
+mod lexer;
+mod parser;
 
 use {
     clap::{Parser, ValueEnum},
