@@ -446,7 +446,7 @@ fn compile_block<'a>(
                     });
                 }
             },
-            ast::Statement::Loop { body } => {
+            ast::Statement::Loop(body) => {
                 let after_loop = scope
                     .global
                     .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
@@ -551,7 +551,7 @@ fn compile_block<'a>(
                     ),
                 };
             }
-            ast::Statement::Block { body } => execute_block(body, scope, &mut cur_frag),
+            ast::Statement::Block(body) => execute_block(body, scope, &mut cur_frag),
             ast::Statement::Return(value) => {
                 let src = compile_expr(value, scope, &mut cur_frag);
                 scope.global.frags[cur_frag].push(ir::Instruction::Move {

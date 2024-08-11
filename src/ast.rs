@@ -58,9 +58,7 @@ pub enum Statement {
         value: Expr,
         mode: AssignMode,
     },
-    Loop {
-        body: Vec<Statement>,
-    },
+    Loop(Vec<Statement>),
     Continue,
     Break,
     Switch {
@@ -68,9 +66,7 @@ pub enum Statement {
         cases: Vec<(usize, Vec<Statement>)>,
         default: Vec<Statement>,
     },
-    Block {
-        body: Vec<Statement>,
-    },
+    Block(Vec<Statement>),
     Return(Expr),
     Eval(Expr),
 }
@@ -78,7 +74,7 @@ pub enum Statement {
 impl From<Statement> for Vec<Statement> {
     fn from(statement: Statement) -> Self {
         match statement {
-            Statement::Block { body } => body,
+            Statement::Block(body) => body,
             _ => Vec::from([statement]),
         }
     }
@@ -171,30 +167,6 @@ pub enum Token {
 }
 
 fn lexer() -> impl Parser<char, Vec<Token>, Error = Simple<char>> {
-    let char_escape = just('\\').ignore_then(choice([
-        just('n').to('\n'),
-        just('r').to('\r'),
-        just('t').to('\t'),
-        just('\\').to('\\'),
-        just('"').to('"'),
-        just('\'').to('\''),
-    ]));
-
-    let string_literal = just('"')
-        .ignore_then(none_of("\"\\").or(char_escape).repeated().collect())
-        .then_ignore(just('"'))
-        .map(Token::String);
-
-    let char_literal = just('\'')
-        .ignore_then(none_of("'\\").or(char_escape))
-        .then_ignore(just('\''))
-        .map(|c| c as _)
-        .map(Token::Int);
-
-    let int_literal = text::int(10).from_str().unwrapped().map(Token::Int);
-
-    let literal = string_literal.or(char_literal).or(int_literal);
-
     let delimiter = choice([
         just('{').to(Token::OpenBrace),
         just('}').to(Token::CloseBrace),
@@ -249,9 +221,39 @@ fn lexer() -> impl Parser<char, Vec<Token>, Error = Simple<char>> {
         text::keyword("continue").to(Token::Continue),
     ]);
 
+    let char_escape = just('\\').ignore_then(choice([
+        just('n').to('\n'),
+        just('r').to('\r'),
+        just('t').to('\t'),
+        just('\\').to('\\'),
+        just('"').to('"'),
+        just('\'').to('\''),
+    ]));
+
+    let string_literal = just('"')
+        .ignore_then(none_of("\"\\").or(char_escape).repeated().collect())
+        .then_ignore(just('"'))
+        .map(Token::String);
+
+    let char_literal = just('\'')
+        .ignore_then(none_of("'\\").or(char_escape))
+        .then_ignore(just('\''))
+        .map(|c| c as _)
+        .map(Token::Int);
+
+    let int_literal = text::int(10).from_str().unwrapped().map(Token::Int);
+
     let ident = text::ident().map(Token::Ident);
 
-    let token = choice((literal, delimiter, operator, keyword, ident));
+    let token = choice((
+        delimiter,
+        operator,
+        keyword,
+        string_literal,
+        char_literal,
+        int_literal,
+        ident,
+    ));
 
     let comment = just("//").then(none_of('\n').repeated()).padded();
 
@@ -473,37 +475,41 @@ fn parser() -> impl Parser<Token, Ast, Error = Simple<Token>> {
 
     let eval = expr.clone().map(Statement::Eval);
 
-    let statement_without_block = r#let
-        .or(assign)
-        .or(r#return)
-        .or(r#break)
-        .or(r#continue)
-        .or(eval);
+    let statement_without_block = choice((r#let, assign, r#return, r#break, r#continue, eval));
 
     let block = recursive(|block| {
-        let if_else = just(Token::If)
-            .ignore_then(expr.clone())
-            .then(block.clone())
-            .then(just(Token::Else).ignore_then(block.clone()).or_not())
-            .map(|((cond, main_body), else_body)| Statement::Switch {
-                cond,
-                cases: vec![(0, else_body.unwrap_or_default())],
-                default: main_body,
-            });
+        let if_else = recursive(|if_else| {
+            just(Token::If)
+                .ignore_then(expr.clone())
+                .then(block.clone())
+                .then(
+                    just(Token::Else)
+                        .ignore_then(choice((
+                            if_else.map(|statement| vec![statement]),
+                            block.clone(),
+                        )))
+                        .or_not(),
+                )
+                .map(|((cond, main_body), else_body)| Statement::Switch {
+                    cond,
+                    cases: vec![(0, else_body.unwrap_or_default())],
+                    default: main_body,
+                })
+        });
 
         let r#loop = just(Token::Loop)
             .ignore_then(block.clone())
-            .map(|body| Statement::Loop { body });
+            .map(Statement::Loop);
 
         let r#while = just(Token::While)
             .ignore_then(expr.clone())
             .then(block.clone())
-            .map(|(cond, body)| Statement::Loop {
-                body: vec![Statement::Switch {
+            .map(|(cond, body)| {
+                Statement::Loop(vec![Statement::Switch {
                     cond,
                     cases: vec![(0, vec![Statement::Break])],
                     default: body,
-                }],
+                }])
             });
 
         let statement_with_block = recursive(|statement_with_block| {
@@ -534,21 +540,24 @@ fn parser() -> impl Parser<Token, Ast, Error = Simple<Token>> {
                     default,
                 });
 
-            let statement_with_block = if_else
-                .or(r#loop)
-                .or(r#while)
-                .or(switch)
-                .or(block.map(|body| Statement::Block { body }));
+            let statement_with_block = choice((
+                if_else,
+                r#loop,
+                r#while,
+                switch,
+                block.map(Statement::Block),
+            ));
 
             statement_with_block
         });
 
         let statement = statement_without_block
             .then_ignore(just(Token::Semi))
-            .or(statement_with_block.then_ignore(just(Token::Semi).or_not()));
+            .or(statement_with_block);
 
         let block = statement
-            .repeated()
+            .separated_by(just(Token::Semi).repeated())
+            .allow_trailing()
             .delimited_by(just(Token::OpenBrace), just(Token::CloseBrace));
 
         block
