@@ -8,9 +8,21 @@ use {
 pub type Ident = String;
 
 #[derive(Debug, Clone)]
+pub enum FieldIdent {
+    Named(Ident),
+    Index(usize),
+}
+
+#[derive(Debug, Clone)]
+pub struct Path {
+    pub root: Ident,
+    pub trail: Vec<FieldIdent>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Place {
-    Var(Ident),
-    Deref(Ident),
+    Path(Path),
+    Deref(Path),
 }
 
 // TODO: Get rid of SimpleExpr and just use Expr.
@@ -19,6 +31,7 @@ pub enum SimpleExpr {
     Int(usize),
     String(String),
     Place(Place),
+    // TODO: AddrOf { mutable: bool, place: Place },
 }
 
 #[derive(Debug, Clone)]
@@ -30,9 +43,29 @@ pub struct CallExpr {
 }
 
 #[derive(Debug, Clone)]
+pub struct Field {
+    pub name: Ident,
+    pub value: Expr,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructExpr {
+    pub name: Ident,
+    pub fields: Vec<Field>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Expr {
     Simple(SimpleExpr),
     Call(CallExpr),
+    Struct(StructExpr),
+    Tuple(Vec<Expr>),
+}
+
+impl Default for Expr {
+    fn default() -> Self {
+        Expr::Tuple(vec![])
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -43,16 +76,12 @@ pub enum AssignMode {
 }
 
 #[derive(Debug, Clone)]
-pub struct VarDecl {
-    pub mutable: bool,
-    pub name: Ident,
-}
-
-#[derive(Debug, Clone)]
 pub enum Statement {
     Let {
-        decl: VarDecl,
-        value: Expr,
+        mutable: bool,
+        name: Ident,
+        ty: Option<Type>,
+        value: Option<Expr>,
     },
     Assign {
         place: Place,
@@ -82,15 +111,82 @@ impl From<Statement> for Vec<Statement> {
 }
 
 #[derive(Debug, Clone)]
-pub struct Function {
+pub enum Type {
+    Tuple(Vec<Type>),
+    Named(Ident),
+    Reference { mutable: bool, ty: Box<Type> },
+    // TODO: Add support for function types
+    // Func {
+    //     param_tys: Vec<Type>,
+    //     ret_ty: Box<Type>,
+    // }
+}
+
+impl Default for Type {
+    fn default() -> Self {
+        Type::Tuple(vec![])
+    }
+}
+
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Type::Tuple(tys) => {
+                write!(f, "(")?;
+                if let Some((first, rest)) = tys.split_first() {
+                    write!(f, "{}", first)?;
+                    if rest.is_empty() {
+                        write!(f, ",")?;
+                    } else {
+                        for ty in rest {
+                            write!(f, ", {}", ty)?;
+                        }
+                    }
+                }
+                write!(f, ")")
+            }
+            Type::Named(name) => write!(f, "{}", name),
+            Type::Reference { mutable, ty } => {
+                write!(f, "&")?;
+                if *mutable {
+                    write!(f, "mut ")?;
+                }
+                write!(f, "{}", ty)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Param {
+    pub mutable: bool,
     pub name: Ident,
-    pub params: Vec<VarDecl>,
-    pub body: Vec<Statement>,
+    pub ty: Type,
+}
+
+#[derive(Debug, Clone)]
+pub struct FieldDef {
+    pub name: Ident,
+    pub ty: Type,
+}
+
+#[derive(Debug, Clone)]
+pub enum Item {
+    FuncDef {
+        name: Ident,
+        params: Vec<Param>,
+        ret_ty: Type,
+        body: Vec<Statement>,
+    },
+    StructDef {
+        name: Ident,
+        fields: Vec<FieldDef>,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct Ast {
-    pub functions: Vec<Function>,
+    pub items: Vec<Item>,
 }
 
 #[derive(Debug, Clone, From, Display)]

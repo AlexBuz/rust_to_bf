@@ -50,7 +50,7 @@ fn main() -> anyhow::Result<()> {
     let src = std::fs::read_to_string(args.source_file)?;
     let ast = ast::Ast::parse(&src)?;
     debug_println!("{ast:#?}");
-    let program = compiler::compile(ast);
+    let program = compiler::compile(&ast);
     debug_println!("{program:#?}");
     let bf_code = program.convert_to_bf();
     if args.print_bf {

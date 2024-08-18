@@ -8,9 +8,12 @@ pub enum Token {
     OpenParen,
     CloseParen,
     Comma,
+    Dot,
     Semi,
-    // arrow operator
-    Arrow,
+    Colon,
+    // arrows
+    ThinArrow,
+    FatArrow,
     // relational operators
     LtEq,
     Lt,
@@ -37,10 +40,13 @@ pub enum Token {
     Star,
     Slash,
     Percent,
+    // references
+    And,
     // keywords
     Let,
     Mut,
     Fn,
+    Struct,
     If,
     Else,
     While,
@@ -63,14 +69,17 @@ fn delimiter_lexer() -> impl Parser<char, Token, Error = Simple<char>> + Clone {
         just('(').to(Token::OpenParen),
         just(')').to(Token::CloseParen),
         just(',').to(Token::Comma),
+        just('.').to(Token::Dot),
         just(';').to(Token::Semi),
+        just(':').to(Token::Colon),
     ])
 }
 
 fn operator_lexer() -> impl Parser<char, Token, Error = Simple<char>> + Clone {
     choice([
-        // arrow operator
-        just("=>").to(Token::Arrow),
+        // arrows
+        just("->").to(Token::ThinArrow),
+        just("=>").to(Token::FatArrow),
         // relational operators
         just("<=").to(Token::LtEq),
         just("<").to(Token::Lt),
@@ -97,6 +106,8 @@ fn operator_lexer() -> impl Parser<char, Token, Error = Simple<char>> + Clone {
         just("*").to(Token::Star),
         just("/").to(Token::Slash),
         just("%").to(Token::Percent),
+        // references
+        just("&").to(Token::And),
     ])
 }
 
@@ -105,6 +116,7 @@ fn keyword_lexer() -> impl Parser<char, Token, Error = Simple<char>> + Clone {
         text::keyword("let").to(Token::Let),
         text::keyword("mut").to(Token::Mut),
         text::keyword("fn").to(Token::Fn),
+        text::keyword("struct").to(Token::Struct),
         text::keyword("if").to(Token::If),
         text::keyword("else").to(Token::Else),
         text::keyword("while").to(Token::While),

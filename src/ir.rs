@@ -62,14 +62,20 @@ impl Place {
 #[derive(Debug, Clone, Copy, Display)]
 pub enum Value {
     Immediate(usize),
-    Deref(Place),
+    At(Place),
+}
+
+impl Default for Value {
+    fn default() -> Self {
+        Value::Immediate(0)
+    }
 }
 
 impl Value {
     fn resolve(&self, state: &mut MemoryState) -> usize {
         match self {
             Value::Immediate(value) => *value,
-            Value::Deref(place) => *place.resolve(state),
+            Value::At(place) => *place.resolve(state),
         }
     }
 }
@@ -279,17 +285,17 @@ pub mod example_programs {
                     body: vec![
                         Move {
                             dst: Direct(StackTop { offset: 2 }),
-                            src: Deref(Direct(StackTop { offset: 1 })),
+                            src: At(Direct(StackTop { offset: 1 })),
                             store_mode: Replace,
                         },
                         Move {
                             dst: Direct(StackTop { offset: 1 }),
-                            src: Deref(Direct(StackTop { offset: 0 })),
+                            src: At(Direct(StackTop { offset: 0 })),
                             store_mode: Add,
                         },
                         Move {
                             dst: Direct(StackTop { offset: 0 }),
-                            src: Deref(Direct(StackTop { offset: 2 })),
+                            src: At(Direct(StackTop { offset: 2 })),
                             store_mode: Replace,
                         },
                         Move {
@@ -301,7 +307,7 @@ pub mod example_programs {
                             dst: Indirect(Heap {
                                 address: StackTop { offset: 4 },
                             }),
-                            src: Deref(Direct(StackTop { offset: 1 })),
+                            src: At(Direct(StackTop { offset: 1 })),
                             store_mode: Replace,
                         },
                         Move {

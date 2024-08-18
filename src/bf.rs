@@ -226,7 +226,7 @@ impl Instruction {
                             },
                         );
                     }
-                    Deref(src) => {
+                    At(src) => {
                         // TODO: perhaps specialize for the cases where src and dst are both direct stack locations or both direct heap locations
                         src.convert_load_to_bf(output);
                         dst.convert_store_to_bf(output, mode);
@@ -333,7 +333,7 @@ impl Instruction {
                     // put the value in reg0, print it, clear reg0, and go back to the stack base
                     output.push_str(&format!(">>{}.[-]<<", "+".repeat(value)));
                 }
-                Deref(src) => {
+                At(src) => {
                     src.write_bf_symbols(output, ".");
                 }
             },

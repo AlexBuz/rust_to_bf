@@ -8,11 +8,24 @@ fn ident_parser() -> impl Parser<Token, Ident, Error = Simple<Token>> + Clone {
 }
 
 fn place_parser() -> impl Parser<Token, Place, Error = Simple<Token>> + Clone {
-    let r#deref = just(Token::Star)
-        .ignore_then(ident_parser())
+    let field_ident = ident_parser()
+        .map(FieldIdent::Named)
+        .or(int_parser().map(FieldIdent::Index));
+
+    let path = ident_parser()
+        .then(just(Token::Dot).ignore_then(field_ident).repeated())
+        .map(|(root, trail)| Path { root, trail });
+
+    let deref = just(Token::Star)
+        .ignore_then(path.clone())
         .map(Place::Deref);
 
-    ident_parser().map(Place::Var).or(r#deref)
+    let place_parser = path.map(Place::Path).or(deref);
+
+    place_parser
+        .clone()
+        .delimited_by(just(Token::OpenParen), just(Token::CloseParen))
+        .or(place_parser)
 }
 
 fn int_parser() -> impl Parser<Token, usize, Error = Simple<Token>> + Clone {
@@ -30,9 +43,34 @@ fn simple_expr_parser() -> impl Parser<Token, SimpleExpr, Error = Simple<Token>>
         .or(string_parser().map(SimpleExpr::String))
 }
 
+fn tuple_parser<I, P>(item_parser: P) -> impl Parser<Token, Vec<I>, Error = Simple<Token>> + Clone
+where
+    I: Clone,
+    P: Parser<Token, I, Error = Simple<Token>> + Clone,
+{
+    choice((
+        // Empty tuple
+        just(Token::OpenParen)
+            .ignore_then(just(Token::CloseParen))
+            .to(vec![]),
+        // Single-item tuple
+        just(Token::OpenParen)
+            .ignore_then(item_parser.clone())
+            .then_ignore(just(Token::Comma))
+            .then_ignore(just(Token::CloseParen))
+            .map(|x| vec![x]),
+        // Multi-item tuple
+        item_parser
+            .separated_by(just(Token::Comma))
+            .at_least(2)
+            .allow_trailing()
+            .delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
+    ))
+}
+
 fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
     recursive(move |expr| {
-        let call = ident_parser()
+        let call_expr = ident_parser()
             .then(just(Token::Bang).or_not().map(|i| i.is_some()))
             .then(
                 expr.clone()
@@ -42,9 +80,39 @@ fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
             )
             .map(|((func, bang), args)| Expr::Call(CallExpr { func, bang, args }));
 
-        let atom = call
-            .or(simple_expr_parser().map(Expr::Simple))
-            .or(expr.delimited_by(just(Token::OpenParen), just(Token::CloseParen)));
+        let struct_expr = ident_parser()
+            .then(
+                ident_parser()
+                    .then(just(Token::Colon).ignore_then(expr.clone()).or_not())
+                    .separated_by(just(Token::Comma))
+                    .allow_trailing()
+                    .delimited_by(just(Token::OpenBrace), just(Token::CloseBrace)),
+            )
+            .map(|(name, fields)| {
+                Expr::Struct(StructExpr {
+                    name,
+                    fields: fields
+                        .into_iter()
+                        .map(|(name, value)| Field {
+                            value: value.unwrap_or_else(|| {
+                                Expr::Simple(SimpleExpr::Place(Place::Path(Path {
+                                    root: name.clone(),
+                                    trail: vec![],
+                                })))
+                            }),
+                            name,
+                        })
+                        .collect(),
+                })
+            });
+
+        let atom = choice((
+            call_expr,
+            struct_expr,
+            tuple_parser(expr.clone()).map(Expr::Tuple),
+            simple_expr_parser().map(Expr::Simple),
+            expr.delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
+        ));
 
         let prec0 = just(Token::Bang)
             .to("!")
@@ -138,19 +206,21 @@ fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
     })
 }
 
-fn mutability_parser() -> impl Parser<Token, bool, Error = Simple<Token>> + Clone {
-    just(Token::Mut).or_not().map(|m| m.is_some())
+fn maybe_token(token: Token) -> impl Parser<Token, bool, Error = Simple<Token>> + Clone {
+    just(token).or_not().map(|m| m.is_some())
 }
 
 fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Simple<Token>> + Clone
 {
     let r#let = just(Token::Let)
-        .ignore_then(mutability_parser())
+        .ignore_then(maybe_token(Token::Mut))
         .then(ident_parser())
-        .then_ignore(just(Token::Eq))
-        .then(expr_parser())
-        .map(|((mutable, name), value)| Statement::Let {
-            decl: VarDecl { mutable, name },
+        .then(just(Token::Colon).ignore_then(type_parser()).or_not())
+        .then(just(Token::Eq).ignore_then(expr_parser()).or_not())
+        .map(|(((mutable, name), ty), value)| Statement::Let {
+            mutable,
+            name,
+            ty,
             value,
         });
 
@@ -215,7 +285,7 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
     let assign = choice((primitive_assign, arithmetic_assign, short_circuit_assign));
 
     let r#return = just(Token::Return)
-        .ignore_then(expr_parser())
+        .ignore_then(expr_parser().or_not().map(Option::unwrap_or_default))
         .map(Statement::Return);
 
     let r#break = just(Token::Break).to(Statement::Break);
@@ -264,7 +334,7 @@ fn block_parser() -> impl Parser<Token, Vec<Statement>, Error = Simple<Token>> +
             });
 
         let statement_with_block = recursive(move |statement_with_block| {
-            let arm = just(Token::Arrow).ignore_then(
+            let arm = just(Token::FatArrow).ignore_then(
                 statement_without_block_parser()
                     .then_ignore(just(Token::Comma))
                     .or(statement_with_block.then_ignore(just(Token::Comma).or_not()))
@@ -311,28 +381,83 @@ fn block_parser() -> impl Parser<Token, Vec<Statement>, Error = Simple<Token>> +
     })
 }
 
-fn var_decl_parser() -> impl Parser<Token, VarDecl, Error = Simple<Token>> {
-    mutability_parser()
-        .then(ident_parser())
-        .map(|(mutable, name)| VarDecl { mutable, name })
+fn type_parser() -> impl Parser<Token, Type, Error = Simple<Token>> + Clone {
+    recursive(|type_parser| {
+        just(Token::And)
+            .ignore_then(maybe_token(Token::Mut))
+            .or_not()
+            .then(choice((
+                ident_parser().map(Type::Named),
+                tuple_parser(type_parser).map(Type::Tuple),
+            )))
+            .map(|(r#ref, ty)| match r#ref {
+                Some(mutable) => Type::Reference {
+                    mutable,
+                    ty: Box::new(ty),
+                },
+                None => ty,
+            })
+    })
 }
 
-fn function_parser() -> impl Parser<Token, Function, Error = Simple<Token>> {
+fn field_parser() -> impl Parser<Token, FieldDef, Error = Simple<Token>> {
+    ident_parser()
+        .then_ignore(just(Token::Colon))
+        .then(type_parser())
+        .map(|(name, ty)| FieldDef { name, ty })
+}
+
+fn struct_def_parser() -> impl Parser<Token, Item, Error = Simple<Token>> {
+    just(Token::Struct)
+        .ignore_then(ident_parser())
+        .then(
+            field_parser()
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .delimited_by(just(Token::OpenBrace), just(Token::CloseBrace)),
+        )
+        .map(|(name, fields)| Item::StructDef { name, fields })
+}
+
+fn param_parser() -> impl Parser<Token, Param, Error = Simple<Token>> {
+    maybe_token(Token::Mut)
+        .then(ident_parser())
+        .then_ignore(just(Token::Colon))
+        .then(type_parser())
+        .map(|((mutable, name), ty)| Param { mutable, name, ty })
+}
+
+fn func_def_parser() -> impl Parser<Token, Item, Error = Simple<Token>> {
     just(Token::Fn)
         .ignore_then(ident_parser())
         .then(
-            var_decl_parser()
+            param_parser()
                 .separated_by(just(Token::Comma))
                 .allow_trailing()
                 .delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
         )
+        .then(
+            just(Token::ThinArrow)
+                .ignore_then(type_parser())
+                .or_not()
+                .map(Option::unwrap_or_default),
+        )
         .then(block_parser())
-        .map(|((name, params), body)| Function { name, params, body })
+        .map(|(((name, params), ret_ty), body)| Item::FuncDef {
+            name,
+            params,
+            ret_ty,
+            body,
+        })
+}
+
+fn item_parser() -> impl Parser<Token, Item, Error = Simple<Token>> {
+    func_def_parser().or(struct_def_parser())
 }
 
 pub fn ast_parser() -> impl Parser<Token, Ast, Error = Simple<Token>> {
-    function_parser()
+    item_parser()
         .repeated()
+        .map(|items| Ast { items })
         .then_ignore(end())
-        .map(|functions| Ast { functions })
 }

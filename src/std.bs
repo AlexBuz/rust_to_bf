@@ -1,14 +1,14 @@
-fn add(mut a, b) {
+fn add(mut a: usize, b: usize) -> usize {
     a += b;
     return a;
 }
 
-fn sub(mut a, b) {
+fn sub(mut a: usize, b: usize) -> usize {
     a -= b;
     return a;
 }
 
-fn mul(mut a, b) {
+fn mul(mut a: usize, b: usize) -> usize {
     let mut result = 0;
     while a {
         a -= 1;
@@ -17,7 +17,7 @@ fn mul(mut a, b) {
     return result;
 }
 
-fn div(mut dividend, divisor) {
+fn div(mut dividend: usize, divisor: usize) -> usize {
     let mut remainder = divisor;
     let mut quotient = 0;
     while dividend {
@@ -40,7 +40,7 @@ fn div(mut dividend, divisor) {
     return quotient;
 }
 
-fn mod(mut dividend, divisor) {
+fn rem(mut dividend: usize, divisor: usize) -> usize {
     let mut remainder = divisor;
     let mut quotient = 0;
     while dividend {
@@ -63,7 +63,7 @@ fn mod(mut dividend, divisor) {
     return remainder;
 }
 
-fn eq(mut a, b) {
+fn eq(mut a: usize, b: usize) -> usize {
     a -= b;
     if a {
         return 0;
@@ -72,7 +72,7 @@ fn eq(mut a, b) {
     }
 }
 
-fn ne(mut a, b) {
+fn ne(mut a: usize, b: usize) -> usize {
     a -= b;
     if a {
         return 1;
@@ -81,7 +81,7 @@ fn ne(mut a, b) {
     }
 }
 
-fn lt(mut a, mut b) {
+fn lt(mut a: usize, mut b: usize) -> usize {
     while b {
         b -= 1;
         if a {
@@ -93,7 +93,7 @@ fn lt(mut a, mut b) {
     return 0;
 }
 
-fn le(mut a, mut b) {
+fn le(mut a: usize, mut b: usize) -> usize {
     while a {
         a -= 1;
         if b {
@@ -105,7 +105,7 @@ fn le(mut a, mut b) {
     return 1;
 }
 
-fn gt(mut a, mut b) {
+fn gt(mut a: usize, mut b: usize) -> usize {
     while a {
         a -= 1;
         if b {
@@ -117,7 +117,7 @@ fn gt(mut a, mut b) {
     return 0;
 }
 
-fn ge(mut a, mut b) {
+fn ge(mut a: usize, mut b: usize) -> usize {
     while b {
         b -= 1;
         if a {
@@ -129,7 +129,7 @@ fn ge(mut a, mut b) {
     return 1;
 }
 
-fn not(a) {
+fn not(a: usize) -> usize {
     if a {
         return 0;
     } else {
@@ -137,7 +137,7 @@ fn not(a) {
     }
 }
 
-fn print_int(mut num) {
+fn print_int(mut num: usize) {
     let divisor = 10;
     let mut remainder = divisor;
     let mut quotient = 0;
@@ -165,7 +165,7 @@ fn print_int(mut num) {
     print_char!(remainder);
 }
 
-fn read_int() {
+fn read_int() -> usize {
     let mut c = 0;
     let mut num = 0;
     loop {
