@@ -674,12 +674,7 @@ impl<'a, 'b> Scope<'a, 'b> {
 }
 
 fn execute_block<'a>(body: &'a [ast::Statement], scope: &mut Scope<'a, '_>, cur_frag: &mut FragId) {
-    let block = compile_block(
-        body,
-        vec![ir::Instruction::ShrinkStack { amount: 1 }],
-        scope,
-        scope.frame_offset,
-    );
+    let block = compile_block(body, scope);
     scope.global.frags[*cur_frag].extend(push_imm(block.start));
     // TODO: if block.start == block.end, then inline the block
     *cur_frag = block.end;
@@ -691,13 +686,11 @@ struct CompiledBlock {
     end: FragId,
 }
 
-fn compile_block<'a>(
-    statements: &'a [ast::Statement],
-    instructions: Vec<ir::Instruction>, // start with some instructions in the block, if desired
-    scope: &mut Scope<'a, '_>,
-    final_frame_size: usize,
-) -> CompiledBlock {
-    let start_frag = scope.global.add_frag(instructions);
+fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>) -> CompiledBlock {
+    let final_frame_size = scope.frame_offset;
+    let start_frag = scope
+        .global
+        .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
     let mut cur_frag = start_frag;
     for statement in statements {
         match statement {
@@ -771,12 +764,7 @@ fn compile_block<'a>(
                     after: after_loop,
                     frame_size: scope.frame_offset,
                 });
-                let loop_body = compile_block(
-                    body,
-                    vec![ir::Instruction::ShrinkStack { amount: 1 }],
-                    scope,
-                    scope.frame_offset,
-                );
+                let loop_body = compile_block(body, scope);
                 assert!(loop_start == loop_body.start);
                 scope.global.frags[cur_frag].extend(push_imm(loop_start));
                 scope.global.frags[loop_body.end].extend(push_imm(loop_start));
@@ -832,18 +820,11 @@ fn compile_block<'a>(
                             .map(|value| {
                                 compile_block(
                                     case_map.get(&value).copied().unwrap_or(default.as_slice()),
-                                    vec![ir::Instruction::ShrinkStack { amount: 1 }],
                                     scope,
-                                    scope.frame_offset,
                                 )
                             })
                             .collect::<Vec<_>>();
-                        let default_block = compile_block(
-                            default,
-                            vec![ir::Instruction::ShrinkStack { amount: 1 }],
-                            scope,
-                            scope.frame_offset,
-                        );
+                        let default_block = compile_block(default, scope);
                         scope.global.frags[cur_frag].extend([ir::Instruction::Switch {
                             cond: place,
                             cases: case_blocks
@@ -925,15 +906,8 @@ fn compile_func<'a>(name: &'a str, global_state: &mut GlobalState<'a>) -> FragId
         });
     }
 
-    let block = compile_block(
-        &func_def.body,
-        vec![ir::Instruction::ShrinkStack {
-            // remove the call address
-            amount: 1,
-        }],
-        &mut scope,
-        0,
-    );
+    let block = compile_block(&func_def.body, &mut scope);
+    scope.shrink_frame(0, block.end);
 
     assert!(block_start == block.start);
 
