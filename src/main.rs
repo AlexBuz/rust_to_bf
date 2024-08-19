@@ -16,7 +16,7 @@ use {
 static DEBUG: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, ValueEnum, Parser)]
-enum ExecuteStage {
+enum ExecuteMode {
     Ir,
     Bf,
     None,
@@ -33,7 +33,7 @@ struct Args {
         default_value = "ir",
         help = "Execute the program, either by interpreting the intermediate representation (faster) or the generated BF code (slower), or don't execute it at all"
     )]
-    execute_stage: ExecuteStage,
+    execute_mode: ExecuteMode,
     #[clap(
         short = 'm',
         long,
@@ -56,10 +56,10 @@ fn main() -> anyhow::Result<()> {
     if args.print_bf {
         println!("{bf_code}");
     }
-    let final_state = match args.execute_stage {
-        ExecuteStage::Ir => program.execute(),
-        ExecuteStage::Bf => Program::execute_bf(&bf_code),
-        ExecuteStage::None => return Ok(()),
+    let final_state = match args.execute_mode {
+        ExecuteMode::Ir => program.execute(),
+        ExecuteMode::Bf => Program::execute_bf(&bf_code),
+        ExecuteMode::None => return Ok(()),
     };
     if args.print_final_memory {
         println!("Final memory state:\n{final_state}");
