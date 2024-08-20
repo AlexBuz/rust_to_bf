@@ -37,10 +37,21 @@ fn string_parser() -> impl Parser<Token, String, Error = Simple<Token>> + Clone 
 }
 
 fn simple_expr_parser() -> impl Parser<Token, SimpleExpr, Error = Simple<Token>> + Clone {
-    place_parser()
-        .map(SimpleExpr::Place)
-        .or(int_parser().map(SimpleExpr::Int))
-        .or(string_parser().map(SimpleExpr::String))
+    let ref_expr = just(Token::And)
+        .ignore_then(maybe_token(Token::Mut))
+        .or_not()
+        .then(place_parser())
+        .map(|(r#ref, place)| match r#ref {
+            Some(mutable) => SimpleExpr::AddrOf { mutable, place },
+            None => SimpleExpr::Place(place),
+        });
+
+    choice((
+        place_parser().map(SimpleExpr::Place),
+        int_parser().map(SimpleExpr::Int),
+        string_parser().map(SimpleExpr::String),
+        ref_expr,
+    ))
 }
 
 fn tuple_parser<I, P>(item_parser: P) -> impl Parser<Token, Vec<I>, Error = Simple<Token>> + Clone
@@ -106,7 +117,7 @@ fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
                 })
             });
 
-        let atom = choice((
+        let prec = choice((
             call_expr,
             struct_expr,
             tuple_parser(expr.clone()).map(Expr::Tuple),
@@ -114,10 +125,10 @@ fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
             expr.delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
         ));
 
-        let prec0 = just(Token::Bang)
+        let prec = just(Token::Bang)
             .to("!")
             .repeated()
-            .then(atom)
+            .then(prec)
             .foldr(|op, expr| {
                 Expr::Call(CallExpr {
                     func: op.to_string(),
@@ -126,7 +137,7 @@ fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
                 })
             });
 
-        let prec1 = prec0
+        let prec = prec
             .clone()
             .then(
                 (choice([
@@ -134,7 +145,7 @@ fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
                     just(Token::Slash).to("/"),
                     just(Token::Percent).to("%"),
                 ]))
-                .then(prec0)
+                .then(prec)
                 .repeated(),
             )
             .foldl(|lhs, (op, rhs)| {
@@ -145,11 +156,11 @@ fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
                 })
             });
 
-        let prec2 = prec1
+        let prec = prec
             .clone()
             .then(
                 (choice([just(Token::Plus).to("+"), just(Token::Minus).to("-")]))
-                    .then(prec1)
+                    .then(prec)
                     .repeated(),
             )
             .foldl(|lhs, (op, rhs)| {
@@ -160,7 +171,7 @@ fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
                 })
             });
 
-        let prec3 = prec2
+        let prec = prec
             .clone()
             .then(
                 (choice([
@@ -171,7 +182,7 @@ fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
                     just(Token::EqEq).to("=="),
                     just(Token::BangEq).to("!="),
                 ]))
-                .then(prec2)
+                .then(prec)
                 .or_not(),
             )
             .foldl(|lhs, (op, rhs)| {
@@ -182,9 +193,9 @@ fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
                 })
             });
 
-        let prec4 = prec3
+        let prec = prec
             .clone()
-            .then(just(Token::AndAnd).to("&&").then(prec3).repeated())
+            .then(just(Token::AndAnd).to("&&").then(prec).repeated())
             .foldl(|lhs, (op, rhs)| {
                 Expr::Call(CallExpr {
                     func: op.to_string(),
@@ -193,9 +204,8 @@ fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
                 })
             });
 
-        prec4
-            .clone()
-            .then(just(Token::OrOr).to("||").then(prec4).repeated())
+        prec.clone()
+            .then(just(Token::OrOr).to("||").then(prec).repeated())
             .foldl(|lhs, (op, rhs)| {
                 Expr::Call(CallExpr {
                     func: op.to_string(),

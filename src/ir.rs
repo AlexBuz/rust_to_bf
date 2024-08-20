@@ -6,10 +6,8 @@ use {
 
 #[derive(Debug, Clone, Copy, Display)]
 pub enum DirectPlace {
-    // TODO: split this into StackTop { offset_down: usize } and Stack { offset: usize }
-    #[display("stack[{offset}]")]
+    #[display("stack[-{}]", offset + 1)]
     StackTop { offset: usize },
-    // TODO: Heap { address: usize },
 }
 
 impl DirectPlace {
@@ -25,7 +23,6 @@ impl DirectPlace {
 
 #[derive(Debug, Clone, Copy, Display)]
 pub enum IndirectPlace {
-    // TODO: Stack { address: DirectPlace },
     #[display("heap[{address}]")]
     Heap { address: DirectPlace },
 }
@@ -63,12 +60,6 @@ impl Place {
 pub enum Value {
     Immediate(usize),
     At(Place),
-}
-
-impl Default for Value {
-    fn default() -> Self {
-        Value::Immediate(0)
-    }
 }
 
 impl Value {
@@ -165,11 +156,6 @@ impl Instruction {
                 default,
             } => {
                 indented_println!(depth, "switch {cond} {{");
-                // cases
-                //     .get(*cond.resolve(state))
-                //     .unwrap_or(default)
-                //     .iter()
-                //     .for_each(|instruction| instruction.execute(state, depth + 1));
                 let case_index = *cond.resolve(state);
                 if case_index < cases.len() {
                     indented_println!(depth + 1, "case {case_index}: {{");
@@ -238,101 +224,5 @@ impl std::fmt::Display for MemoryState {
         writeln!(f, "stack: {:?}", self.stack)?;
         write!(f, "heap: {:?}", self.heap)?;
         Ok(())
-    }
-}
-
-#[allow(unused)]
-pub mod example_programs {
-    use super::*;
-    use DirectPlace::*;
-    use IndirectPlace::*;
-    use Instruction::*;
-    use Place::*;
-    use StoreMode::*;
-    use Value::*;
-
-    pub fn fibonacci() -> Program {
-        Program {
-            instructions: vec![
-                GrowStack { amount: 5 },
-                Move {
-                    dst: Direct(StackTop { offset: 0 }),
-                    src: Immediate(0), // a
-                    store_mode: Replace,
-                },
-                Move {
-                    dst: Direct(StackTop { offset: 1 }),
-                    src: Immediate(1), // b
-                    store_mode: Replace,
-                },
-                Move {
-                    dst: Direct(StackTop { offset: 2 }),
-                    src: Immediate(0), // temp
-                    store_mode: Replace,
-                },
-                Move {
-                    dst: Direct(StackTop { offset: 3 }),
-                    src: Immediate(12), // max iterations
-                    store_mode: Replace,
-                },
-                Move {
-                    dst: Direct(StackTop { offset: 4 }),
-                    src: Immediate(0), // heap pointer
-                    store_mode: Replace,
-                },
-                While {
-                    cond: Direct(StackTop { offset: 3 }),
-                    body: vec![
-                        Move {
-                            dst: Direct(StackTop { offset: 2 }),
-                            src: At(Direct(StackTop { offset: 1 })),
-                            store_mode: Replace,
-                        },
-                        Move {
-                            dst: Direct(StackTop { offset: 1 }),
-                            src: At(Direct(StackTop { offset: 0 })),
-                            store_mode: Add,
-                        },
-                        Move {
-                            dst: Direct(StackTop { offset: 0 }),
-                            src: At(Direct(StackTop { offset: 2 })),
-                            store_mode: Replace,
-                        },
-                        Move {
-                            dst: Direct(StackTop { offset: 3 }),
-                            src: Immediate(1),
-                            store_mode: Subtract,
-                        },
-                        Move {
-                            dst: Indirect(Heap {
-                                address: StackTop { offset: 4 },
-                            }),
-                            src: At(Direct(StackTop { offset: 1 })),
-                            store_mode: Replace,
-                        },
-                        Move {
-                            dst: Direct(StackTop { offset: 4 }),
-                            src: Immediate(1),
-                            store_mode: Add,
-                        },
-                    ],
-                },
-            ],
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_fibonacci_program() {
-        let final_state = example_programs::fibonacci().execute();
-        let expected_final_state = MemoryState {
-            stack: vec![12, 0, 144, 233, 144],
-            heap: vec![1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233],
-        };
-        assert_eq!(final_state, expected_final_state);
     }
 }

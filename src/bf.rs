@@ -20,8 +20,8 @@ use {
 /*
 Memory layout: [
     stack_base, heap_base,
-    reg0, temp0, stack0, heap0, stack0_active, heap0_active,
-    reg1, temp1, stack1, heap1, stack1_active, heap1_active,
+    reg0, temp0, stack0, heap0, stack0_marker, heap0_marker,
+    reg1, temp1, stack1, heap1, stack1_marker, heap1_marker,
     ...
 ]
 */
@@ -98,13 +98,13 @@ impl IndirectPlace {
                 // put the address in reg0
                 address.convert_load_to_bf(&mut sb_to_place);
 
-                // leave a trail of active heap cells up to the desired heap element
+                // leave a trail of heap markers up to the desired heap element
                 sb_to_place.push_str(">>");
                 sb_to_place.push_str("[-5>+5<]");
                 sb_to_place.push_str("5>");
                 sb_to_place.push_str("[-[-6>+6<]+6>]<<");
 
-                // delete the trail of active heap cells and go back to the stack base
+                // delete the trail of heap markers and go back to the stack base
                 let place_to_sb = "4<[-6<]<";
 
                 (sb_to_place, Cow::Borrowed(place_to_sb))
@@ -213,13 +213,13 @@ impl Instruction {
             Move {
                 src,
                 dst,
-                store_mode: mode,
+                store_mode,
             } => {
                 match src {
                     Immediate(value) => {
                         dst.write_bf_symbols(
                             output,
-                            &match mode {
+                            &match store_mode {
                                 StoreMode::Add => "+".repeat(value),
                                 StoreMode::Subtract => "-".repeat(value),
                                 StoreMode::Replace => format!("[-]{}", "+".repeat(value)),
@@ -229,7 +229,7 @@ impl Instruction {
                     At(src) => {
                         // TODO: perhaps specialize for the cases where src and dst are both direct stack locations or both direct heap locations
                         src.convert_load_to_bf(output);
-                        dst.convert_store_to_bf(output, mode);
+                        dst.convert_store_to_bf(output, store_mode);
                     }
                 }
             }
@@ -259,30 +259,6 @@ impl Instruction {
                 output.push(']');
                 output.push_str(&cond_to_sb);
             }
-            // IfElse {
-            //     cond,
-            //     ref main_body,
-            //     ref else_body,
-            // } => {
-            //     cond.convert_load_to_bf(output);
-            //     if else_body.is_empty() {
-            //         output.push_str(">>[[-]<<");
-            //         for instr in main_body {
-            //             instr.convert_to_bf(output);
-            //         }
-            //         output.push_str(">>]<<");
-            //     } else {
-            //         output.push_str(">>6>+6<[6>-6<[-]<<");
-            //         for instr in main_body {
-            //             instr.convert_to_bf(output);
-            //         }
-            //         output.push_str(">>]6>[-<<6<");
-            //         for instr in else_body {
-            //             instr.convert_to_bf(output);
-            //         }
-            //         output.push_str(">>6>]<<6<");
-            //     }
-            // }
             Switch {
                 cond,
                 ref cases,
@@ -400,9 +376,6 @@ fn execute_bf(bf_code: &str) -> Vec<Cell> {
             _ => {}
         }
         i += 1;
-        // if executed_count == 530000 {
-        //     break;
-        // }
     }
     debug_println!("# of instructions executed: {}", executed_count);
     tape
@@ -430,13 +403,13 @@ impl Program {
         let mut stack = Vec::<usize>::new();
         let mut heap = Vec::<usize>::new();
         for chunk in tape[2..].chunks(6) {
-            let (reg_i, temp_i, stack_i, heap_i, stack_active_i, heap_active_i) =
+            let (reg_i, temp_i, stack_i, heap_i, stack_marker_i, heap_marker_i) =
                 (chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5]);
-            if stack_active_i != 0 {
+            if stack_marker_i != 0 {
                 stack.push(stack_i as _);
             }
             heap.push(heap_i as _);
-            assert_eq!(heap_active_i, 0);
+            assert_eq!(heap_marker_i, 0);
             assert_eq!(reg_i, 0);
             assert_eq!(temp_i, 0);
         }

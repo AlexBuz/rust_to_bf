@@ -31,7 +31,7 @@ pub enum SimpleExpr {
     Int(usize),
     String(String),
     Place(Place),
-    // TODO: AddrOf { mutable: bool, place: Place },
+    AddrOf { mutable: bool, place: Place },
 }
 
 #[derive(Debug, Clone)]

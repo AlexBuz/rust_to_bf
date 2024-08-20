@@ -5,10 +5,10 @@ use {
 
 #[derive(Debug, Clone)]
 struct Var<'a> {
+    frame_offset: usize,
     mutable: bool,
     name: &'a str,
     ty: Type<'a>,
-    frame_offset: usize,
 }
 
 fn size_of(ty: &Type, scope: &Scope) -> usize {
@@ -28,7 +28,7 @@ fn size_of(ty: &Type, scope: &Scope) -> usize {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 #[must_use]
 struct Typed<'a, T> {
     ty: Type<'a>,
@@ -55,7 +55,7 @@ impl<'a, T> Typed<'a, T> {
     }
 
     fn expect_unit(self) -> T {
-        self.expect(&Type::default())
+        self.expect(&Type::unit())
     }
 }
 
@@ -71,7 +71,7 @@ fn compile_path_access<'a>(
         panic!("Variable `{}` is not mutable.", path.root);
     }
     let mut ty = &var.ty;
-    let mut offset = scope.frame_offset - var.frame_offset - 1;
+    let mut offset = scope.frame_size - var.frame_offset - 1;
     for segment in &path.trail {
         match *segment {
             ast::FieldIdent::Index(index) => {
@@ -122,7 +122,7 @@ fn compile_place<'a>(
     match place {
         ast::Place::Path(path) => compile_path_access(path, mutating, scope),
         ast::Place::Deref(_) => {
-            todo!("Dereferencing");
+            todo!("dereferencing");
         }
     }
 }
@@ -131,9 +131,9 @@ fn compile_simple_expr<'a>(
     simple_expr: &'a ast::SimpleExpr,
     scope: &mut Scope<'a, '_>,
 ) -> Typed<'a, ir::Value> {
-    match simple_expr {
-        ast::SimpleExpr::Int(i) => Typed::new(Type::Usize, ir::Value::Immediate(*i)),
-        ast::SimpleExpr::String(s) => Typed::new(
+    match *simple_expr {
+        ast::SimpleExpr::Int(i) => Typed::new(Type::Usize, ir::Value::Immediate(i)),
+        ast::SimpleExpr::String(ref s) => Typed::new(
             Type::Usize,
             ir::Value::Immediate(*scope.global.string_ids.entry(s).or_insert_with(|| {
                 scope.global.frags.push(
@@ -147,7 +147,17 @@ fn compile_simple_expr<'a>(
                 scope.global.frags.len() - 1
             })),
         ),
-        ast::SimpleExpr::Place(place) => compile_place(place, false, scope).map(ir::Value::At),
+        ast::SimpleExpr::Place(ref place) => compile_place(place, false, scope).map(ir::Value::At),
+        ast::SimpleExpr::AddrOf { mutable, ref place } => {
+            let place = compile_place(place, mutable, scope);
+            Typed::new(
+                Type::Reference {
+                    mutable,
+                    ty: Box::new(place.ty),
+                },
+                ir::Value::At(todo!("AddrOf")),
+            )
+        }
     }
 }
 
@@ -160,6 +170,10 @@ fn push_imm(value: usize) -> [ir::Instruction; 2] {
             store_mode: ir::StoreMode::Add,
         },
     ]
+}
+
+fn stack_top(offset: usize) -> ir::Value {
+    ir::Value::At(ir::Place::Direct(ir::DirectPlace::StackTop { offset }))
 }
 
 type FragId = usize;
@@ -190,23 +204,20 @@ fn compile_intrinsic_call<'a>(
                     dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
                 },
             ]);
-            scope.frame_offset += 1;
-            Typed::new(
-                Type::Usize,
-                ir::Value::At(ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 })),
-            )
+            scope.frame_size += 1;
+            Typed::new(Type::Usize, stack_top(0))
         }
         "print_char" => {
             if args.is_empty() {
                 panic!("`{name}` requires at least 1 argument");
             }
-            let frame_size = scope.frame_offset;
+            let frame_size = scope.frame_size;
             for arg in args {
                 let src = compile_expr(arg, scope, cur_frag).expect(&Type::Usize);
                 scope.global.frags[*cur_frag].push(ir::Instruction::Output { src });
             }
             scope.shrink_frame(frame_size, *cur_frag);
-            Typed::default()
+            Typed::new(Type::unit(), stack_top(0))
         }
         "print" => {
             if args.is_empty() {
@@ -226,15 +237,15 @@ fn compile_intrinsic_call<'a>(
                             .global
                             .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
 
-                        scope.frame_offset += 1;
+                        scope.frame_size += 1;
                         scope.global.frags[*cur_frag].extend(push_imm(return_frag));
                         compile_expr_and_push(arg, scope, cur_frag).expect(&Type::Usize);
-                        scope.frame_offset -= 2;
+                        scope.frame_size -= 2;
                         *cur_frag = return_frag;
                     }
                 }
             }
-            Typed::default()
+            Typed::new(Type::unit(), stack_top(0))
         }
         "println" => {
             if !args.is_empty() {
@@ -243,7 +254,7 @@ fn compile_intrinsic_call<'a>(
             scope.global.frags[*cur_frag].push(ir::Instruction::Output {
                 src: ir::Value::Immediate(b'\n' as _),
             });
-            Typed::default()
+            Typed::new(Type::unit(), stack_top(0))
         }
         "printf" => {
             let Some((first_arg, mut args)) = args.split_first() else {
@@ -254,7 +265,7 @@ fn compile_intrinsic_call<'a>(
                 _ => panic!("First argument to `{name}` must be a string literal"),
             };
             let mut format_chars = format_string.bytes();
-            let frame_size = scope.frame_offset;
+            let frame_size = scope.frame_size;
             while let Some(c) = format_chars.next() {
                 if c == b'%' {
                     let Some(format_specifier) = format_chars.next() else {
@@ -287,7 +298,7 @@ fn compile_intrinsic_call<'a>(
             if !args.is_empty() {
                 panic!("Too many arguments for format string `{format_string}`");
             }
-            Typed::default()
+            Typed::new(Type::unit(), stack_top(0))
         }
         "exit" => {
             if !args.is_empty() {
@@ -295,7 +306,7 @@ fn compile_intrinsic_call<'a>(
             }
             scope.global.frags[*cur_frag].extend(push_imm(EXIT_FRAG));
             *cur_frag = EXIT_FRAG;
-            Typed::default()
+            Typed::new(Type::unit(), stack_top(0))
         }
         "&&" | "||" => {
             let Some(([lhs, rhs], [])) = args.split_first_chunk() else {
@@ -325,16 +336,13 @@ fn compile_intrinsic_call<'a>(
             }]);
 
             *cur_frag = long_circuit;
-            scope.frame_offset -= 1;
+            scope.frame_size -= 1;
             compile_expr_and_push(rhs, scope, cur_frag).expect(&Type::Usize);
             scope.global.frags[*cur_frag].extend(push_imm(short_circuit));
 
             *cur_frag = short_circuit;
 
-            Typed::new(
-                Type::Usize,
-                ir::Value::At(ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 })),
-            )
+            Typed::new(Type::Usize, stack_top(0))
         }
         _ => {
             if scope.global.func_defs.contains_key(name) {
@@ -373,14 +381,15 @@ fn compile_func_call<'a>(
         .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
 
     // make space for the return value
-    scope.grow_frame(size_of(&func_def.ret_ty, scope), *cur_frag);
+    let ret_size = size_of(&func_def.ret_ty, scope);
+    scope.grow_frame(ret_size, *cur_frag);
 
-    // remember the frame offset before the call
-    let return_frame_offset = scope.frame_offset;
+    // remember the frame size before the call so we can restore it after the call
+    let return_frame_size = scope.frame_size;
 
     // push the return address
     scope.global.frags[*cur_frag].extend(push_imm(return_frag));
-    scope.frame_offset += 1;
+    scope.frame_size += 1;
 
     for (arg, param) in args.iter().zip(&func_def.params) {
         compile_expr_and_push(arg, scope, cur_frag).expect(&param.ty);
@@ -390,13 +399,10 @@ fn compile_func_call<'a>(
 
     *cur_frag = return_frag;
 
-    // restore the frame offset
-    scope.frame_offset = return_frame_offset;
+    // restore the frame size
+    scope.frame_size = return_frame_size;
 
-    Typed::new(
-        func_def.ret_ty.clone(),
-        ir::Value::At(ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 })),
-    )
+    Typed::new(func_def.ret_ty.clone(), stack_top(0))
 }
 
 fn compile_call<'a>(
@@ -439,10 +445,7 @@ fn compile_struct_expr<'a>(
         compile_expr_and_push(&field.value, scope, cur_frag).expect(&field_def.ty);
     }
     let struct_ty = Type::Named(&struct_expr.name);
-    Typed::new(
-        struct_ty,
-        ir::Value::At(ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 })),
-    )
+    Typed::new(struct_ty, stack_top(0))
 }
 
 fn compile_tuple_expr<'a>(
@@ -457,7 +460,7 @@ fn compile_tuple_expr<'a>(
                 .map(|expr| compile_expr_and_push(expr, scope, cur_frag).ty)
                 .collect(),
         ),
-        ir::Value::At(ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 })),
+        stack_top(0),
     )
 }
 
@@ -475,10 +478,14 @@ fn compile_expr<'a>(
 }
 
 fn type_of_simple_expr<'a>(simple_expr: &'a ast::SimpleExpr, scope: &Scope<'a, '_>) -> Type<'a> {
-    match simple_expr {
+    match *simple_expr {
         ast::SimpleExpr::Int(_) => Type::Usize,
         ast::SimpleExpr::String(_) => Type::Usize,
-        ast::SimpleExpr::Place(place) => compile_place(place, false, scope).ty,
+        ast::SimpleExpr::Place(ref place) => compile_place(place, false, scope).ty,
+        ast::SimpleExpr::AddrOf { mutable, ref place } => Type::Reference {
+            mutable,
+            ty: Box::new(compile_place(place, mutable, scope).ty),
+        },
     }
 }
 
@@ -487,22 +494,15 @@ fn increment_place(place: ir::Place) -> ir::Place {
         ir::Place::Direct(ir::DirectPlace::StackTop { offset }) => {
             ir::Place::Direct(ir::DirectPlace::StackTop { offset: offset + 1 })
         }
-        ir::Place::Indirect(ir::IndirectPlace::Heap { .. }) => {
-            todo!("Incrementing heap addresses");
+        ir::Place::Indirect(_) => {
+            todo!("incrementing indirect places")
         }
-    }
-}
-
-fn increment_value_place(value: ir::Value) -> ir::Value {
-    match value {
-        ir::Value::At(place) => ir::Value::At(increment_place(place)),
-        ir::Value::Immediate(_) => value,
     }
 }
 
 fn compile_move<'a>(
     mut dst: ir::Place,
-    mut src: ir::Value,
+    src: ir::Value,
     store_mode: ir::StoreMode,
     ty: &Type<'a>,
     scope: &mut Scope<'a, '_>,
@@ -516,14 +516,17 @@ fn compile_move<'a>(
             store_mode,
         }),
         size => {
+            let ir::Value::At(mut src) = src else {
+                unreachable!("Expected source value to be a place in a move of size > 1");
+            };
             for _ in 0..size {
                 scope.global.frags[cur_frag].push(ir::Instruction::Move {
                     dst,
-                    src,
+                    src: ir::Value::At(src),
                     store_mode,
                 });
                 dst = increment_place(dst);
-                src = increment_value_place(src);
+                src = increment_place(src);
             }
         }
     }
@@ -556,7 +559,7 @@ fn compile_expr_and_push<'a>(
             match ret.value {
                 ir::Value::At(ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 })) => {}
                 ir::Value::Immediate(value) => {
-                    scope.frame_offset += 1;
+                    scope.frame_size += 1;
                     scope.global.frags[*cur_frag].extend(push_imm(value));
                 }
                 _ => unreachable!(
@@ -620,7 +623,7 @@ struct LoopInfo {
 struct Scope<'a, 'b> {
     func_def: &'a FuncDef<'a>,
     vars: Vec<Var<'a>>,
-    frame_offset: usize,
+    frame_size: usize,
     global: &'b mut GlobalState<'a>,
     loop_stack: Vec<LoopInfo>,
 }
@@ -630,17 +633,17 @@ impl<'a, 'b> Scope<'a, 'b> {
         Self {
             func_def,
             vars: vec![],
-            frame_offset: 0,
+            frame_size: 0,
             global,
             loop_stack: vec![],
         }
     }
 
     fn shrink_frame_early(&mut self, target_frame_size: usize, cur_frag: FragId) {
-        match target_frame_size.cmp(&self.frame_offset) {
+        match target_frame_size.cmp(&self.frame_size) {
             Less => {
                 self.global.frags[cur_frag].push(ir::Instruction::ShrinkStack {
-                    amount: self.frame_offset - target_frame_size,
+                    amount: self.frame_size - target_frame_size,
                 });
             }
             Equal => {}
@@ -649,7 +652,7 @@ impl<'a, 'b> Scope<'a, 'b> {
     }
 
     fn shrink_frame(&mut self, target_frame_size: usize, cur_frag: FragId) {
-        match target_frame_size.cmp(&self.frame_offset) {
+        match target_frame_size.cmp(&self.frame_size) {
             Less => {
                 self.shrink_frame_early(target_frame_size, cur_frag);
                 self.vars.truncate(
@@ -660,7 +663,7 @@ impl<'a, 'b> Scope<'a, 'b> {
                         .map(|pos| self.vars.len() - pos)
                         .unwrap_or(0),
                 );
-                self.frame_offset = target_frame_size;
+                self.frame_size = target_frame_size;
             }
             Equal => {}
             Greater => unreachable!("Cannot shrink_frame to a larger size"),
@@ -669,7 +672,7 @@ impl<'a, 'b> Scope<'a, 'b> {
 
     fn grow_frame(&mut self, amount: usize, cur_frag: FragId) {
         self.global.frags[cur_frag].push(ir::Instruction::GrowStack { amount });
-        self.frame_offset += amount;
+        self.frame_size += amount;
     }
 }
 
@@ -687,18 +690,18 @@ struct CompiledBlock {
 }
 
 fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>) -> CompiledBlock {
-    let final_frame_size = scope.frame_offset;
+    let orig_frame_size = scope.frame_size;
     let start_frag = scope
         .global
         .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
     let mut cur_frag = start_frag;
     for statement in statements {
-        match statement {
+        match *statement {
             ast::Statement::Let {
                 mutable,
-                name,
-                ty,
-                value,
+                ref name,
+                ref ty,
+                ref value,
             } => {
                 let ty = match (ty.as_ref().map(Type::from), value) {
                     (None, None) => panic!("Variable `{name}` must have a type or a value."),
@@ -716,13 +719,17 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                     (None, Some(value)) => compile_expr_and_push(value, scope, &mut cur_frag).ty,
                 };
                 scope.vars.push(Var {
-                    mutable: *mutable,
+                    frame_offset: scope.frame_size - 1,
+                    mutable,
                     name,
                     ty,
-                    frame_offset: scope.frame_offset - 1,
                 });
             }
-            ast::Statement::Assign { place, value, mode } => match (mode, value) {
+            ast::Statement::Assign {
+                ref place,
+                ref value,
+                mode,
+            } => match (mode, value) {
                 (
                     ast::AssignMode::Replace,
                     ast::Expr::Call(ast::CallExpr {
@@ -747,14 +754,14 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                     compile_move(
                         dst.value,
                         src.value,
-                        compile_store_mode(*mode),
+                        compile_store_mode(mode),
                         &src.ty,
                         scope,
                         cur_frag,
                     );
                 }
             },
-            ast::Statement::Loop(body) => {
+            ast::Statement::Loop(ref body) => {
                 let after_loop = scope
                     .global
                     .add_frag(vec![ir::Instruction::ShrinkStack { amount: 1 }]);
@@ -762,7 +769,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                 scope.loop_stack.push(LoopInfo {
                     start: loop_start,
                     after: after_loop,
-                    frame_size: scope.frame_offset,
+                    frame_size: scope.frame_size,
                 });
                 let loop_body = compile_block(body, scope);
                 assert!(loop_start == loop_body.start);
@@ -796,9 +803,9 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                 break;
             }
             ast::Statement::Switch {
-                cond,
-                cases,
-                default,
+                ref cond,
+                ref cases,
+                ref default,
             } => {
                 let case_map = cases
                     .iter()
@@ -847,12 +854,12 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                     ),
                 };
             }
-            ast::Statement::Block(body) => execute_block(body, scope, &mut cur_frag),
-            ast::Statement::Return(value) => {
+            ast::Statement::Block(ref body) => execute_block(body, scope, &mut cur_frag),
+            ast::Statement::Return(ref value) => {
                 let src = compile_expr(value, scope, &mut cur_frag).expect(&scope.func_def.ret_ty);
                 compile_move(
                     ir::Place::Direct(ir::DirectPlace::StackTop {
-                        offset: scope.frame_offset + 1,
+                        offset: scope.frame_size + 1,
                     }),
                     src,
                     ir::StoreMode::Add,
@@ -864,14 +871,14 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                 cur_frag = EXIT_FRAG;
                 break;
             }
-            ast::Statement::Eval(expr) => {
-                let frame_size = scope.frame_offset;
+            ast::Statement::Eval(ref expr) => {
+                let frame_size = scope.frame_size;
                 let _ = compile_expr(expr, scope, &mut cur_frag);
                 scope.shrink_frame(frame_size, cur_frag);
             }
         }
     }
-    scope.shrink_frame(final_frame_size, cur_frag);
+    scope.shrink_frame(orig_frame_size, cur_frag);
     CompiledBlock {
         start: start_frag,
         end: cur_frag,
@@ -897,12 +904,12 @@ fn compile_func<'a>(name: &'a str, global_state: &mut GlobalState<'a>) -> FragId
 
     let mut scope = Scope::new(func_def, global_state);
     for param in &func_def.params {
-        scope.frame_offset += size_of(&param.ty, &scope);
+        scope.frame_size += size_of(&param.ty, &scope);
         scope.vars.push(Var {
+            frame_offset: scope.frame_size - 1,
             mutable: param.mutable,
             name: param.name,
             ty: param.ty.clone(),
-            frame_offset: scope.frame_offset - 1,
         });
     }
 
@@ -951,17 +958,17 @@ enum Type<'a> {
     Reference { mutable: bool, ty: Box<Type<'a>> },
 }
 
-impl Default for Type<'_> {
-    fn default() -> Self {
+impl Type<'_> {
+    const fn unit() -> Self {
         Type::Tuple(vec![])
     }
 }
 
 impl std::fmt::Display for Type<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
+        match *self {
             Type::Usize => write!(f, "usize"),
-            Type::Tuple(tys) => {
+            Type::Tuple(ref tys) => {
                 write!(f, "(")?;
                 if let Some((first, rest)) = tys.split_first() {
                     write!(f, "{}", first)?;
@@ -976,9 +983,9 @@ impl std::fmt::Display for Type<'_> {
                 write!(f, ")")
             }
             Type::Named(name) => write!(f, "{}", name),
-            Type::Reference { mutable, ty } => {
+            Type::Reference { mutable, ref ty } => {
                 write!(f, "&")?;
-                if *mutable {
+                if mutable {
                     write!(f, "mut ")?;
                 }
                 write!(f, "{}", ty)
@@ -989,14 +996,14 @@ impl std::fmt::Display for Type<'_> {
 
 impl<'a> From<&'a ast::Type> for Type<'a> {
     fn from(ty: &'a ast::Type) -> Self {
-        match ty {
-            ast::Type::Tuple(tys) => Type::Tuple(tys.iter().map(Type::from).collect()),
-            ast::Type::Named(name) => match name.as_str() {
+        match *ty {
+            ast::Type::Tuple(ref tys) => Type::Tuple(tys.iter().map(Type::from).collect()),
+            ast::Type::Named(ref name) => match name.as_str() {
                 "usize" => Type::Usize,
                 _ => Type::Named(name),
             },
             ast::Type::Reference { mutable, ref ty } => Type::Reference {
-                mutable: *mutable,
+                mutable,
                 ty: Box::new(Type::from(ty.as_ref())),
             },
         }
@@ -1077,7 +1084,7 @@ pub fn compile(ast: &ast::Ast) -> ir::Program {
 
     let main_func_id = compile_func("main", &mut global_state);
 
-    if global_state.func_defs["main"].ret_ty != Type::default() {
+    if global_state.func_defs["main"].ret_ty != Type::unit() {
         panic!("`main` must return `()`");
     }
 
