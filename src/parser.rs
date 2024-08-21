@@ -36,24 +36,6 @@ fn string_parser() -> impl Parser<Token, String, Error = Simple<Token>> + Clone 
     select! { Token::String(string) => string }
 }
 
-fn simple_expr_parser() -> impl Parser<Token, SimpleExpr, Error = Simple<Token>> + Clone {
-    let ref_expr = just(Token::And)
-        .ignore_then(maybe_token(Token::Mut))
-        .or_not()
-        .then(place_parser())
-        .map(|(r#ref, place)| match r#ref {
-            Some(mutable) => SimpleExpr::AddrOf { mutable, place },
-            None => SimpleExpr::Place(place),
-        });
-
-    choice((
-        place_parser().map(SimpleExpr::Place),
-        int_parser().map(SimpleExpr::Int),
-        string_parser().map(SimpleExpr::String),
-        ref_expr,
-    ))
-}
-
 fn tuple_parser<I, P>(item_parser: P) -> impl Parser<Token, Vec<I>, Error = Simple<Token>> + Clone
 where
     I: Clone,
@@ -81,6 +63,15 @@ where
 
 fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
     recursive(move |expr| {
+        let ref_expr = just(Token::And)
+            .ignore_then(maybe_token(Token::Mut))
+            .or_not()
+            .then(place_parser())
+            .map(|(r#ref, place)| match r#ref {
+                Some(mutable) => Expr::Ref { mutable, place },
+                None => Expr::Place(place),
+            });
+
         let call_expr = ident_parser()
             .then(just(Token::Bang).or_not().map(|i| i.is_some()))
             .then(
@@ -106,10 +97,10 @@ fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
                         .into_iter()
                         .map(|(name, value)| Field {
                             value: value.unwrap_or_else(|| {
-                                Expr::Simple(SimpleExpr::Place(Place::Path(Path {
+                                Expr::Place(Place::Path(Path {
                                     root: name.clone(),
                                     trail: vec![],
-                                })))
+                                }))
                             }),
                             name,
                         })
@@ -121,7 +112,10 @@ fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
             call_expr,
             struct_expr,
             tuple_parser(expr.clone()).map(Expr::Tuple),
-            simple_expr_parser().map(Expr::Simple),
+            place_parser().map(Expr::Place),
+            int_parser().map(Expr::Int),
+            string_parser().map(Expr::String),
+            ref_expr,
             expr.delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
         ));
 
@@ -255,7 +249,7 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
             value: Expr::Call(CallExpr {
                 func: op.to_string(),
                 bang: false,
-                args: vec![Expr::Simple(SimpleExpr::Place(place)), value],
+                args: vec![Expr::Place(place), value],
             }),
             mode: AssignMode::Replace,
         });
@@ -286,7 +280,7 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
                 ShortCircuitOp::Or => [long_circuit, short_circuit],
             };
             Statement::Switch {
-                cond: Expr::Simple(SimpleExpr::Place(place)),
+                cond: Expr::Place(place),
                 cases: vec![(0, false_case)],
                 default: true_case,
             }
@@ -401,7 +395,7 @@ fn type_parser() -> impl Parser<Token, Type, Error = Simple<Token>> + Clone {
                 tuple_parser(type_parser).map(Type::Tuple),
             )))
             .map(|(r#ref, ty)| match r#ref {
-                Some(mutable) => Type::Reference {
+                Some(mutable) => Type::Ref {
                     mutable,
                     ty: Box::new(ty),
                 },

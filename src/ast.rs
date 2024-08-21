@@ -25,15 +25,6 @@ pub enum Place {
     Deref(Path),
 }
 
-// TODO: Get rid of SimpleExpr and just use Expr.
-#[derive(Debug, Clone)]
-pub enum SimpleExpr {
-    Int(usize),
-    String(String),
-    Place(Place),
-    AddrOf { mutable: bool, place: Place },
-}
-
 #[derive(Debug, Clone)]
 pub struct CallExpr {
     // TODO: Instead of an Ident for the func, take an Expr to allow for dynamic dispatch.
@@ -56,7 +47,10 @@ pub struct StructExpr {
 
 #[derive(Debug, Clone)]
 pub enum Expr {
-    Simple(SimpleExpr),
+    Int(usize),
+    String(String),
+    Place(Place),
+    Ref { mutable: bool, place: Place },
     Call(CallExpr),
     Struct(StructExpr),
     Tuple(Vec<Expr>),
@@ -114,7 +108,7 @@ impl From<Statement> for Vec<Statement> {
 pub enum Type {
     Tuple(Vec<Type>),
     Named(Ident),
-    Reference { mutable: bool, ty: Box<Type> },
+    Ref { mutable: bool, ty: Box<Type> },
     // TODO: Add support for function types
     // Func {
     //     param_tys: Vec<Type>,
@@ -146,7 +140,7 @@ impl std::fmt::Display for Type {
                 write!(f, ")")
             }
             Type::Named(name) => write!(f, "{}", name),
-            Type::Reference { mutable, ty } => {
+            Type::Ref { mutable, ty } => {
                 write!(f, "&")?;
                 if *mutable {
                     write!(f, "mut ")?;

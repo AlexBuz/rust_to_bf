@@ -10,7 +10,10 @@ use {
     clap::{Parser, ValueEnum},
     common::debug_println,
     ir::Program,
-    std::sync::atomic::{AtomicBool, Ordering},
+    std::{
+        cell::LazyCell,
+        sync::atomic::{AtomicBool, Ordering},
+    },
 };
 
 static DEBUG: AtomicBool = AtomicBool::new(false);
@@ -52,9 +55,9 @@ fn main() -> anyhow::Result<()> {
     debug_println!("{ast:#?}");
     let program = compiler::compile(&ast);
     debug_println!("{program:#?}");
-    let bf_code = program.convert_to_bf();
+    let bf_code = LazyCell::new(|| program.convert_to_bf());
     if args.print_bf {
-        println!("{bf_code}");
+        println!("{}", *bf_code);
     }
     let final_state = match args.execute_mode {
         ExecuteMode::Ir => program.execute(),

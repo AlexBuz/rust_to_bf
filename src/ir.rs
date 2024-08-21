@@ -4,7 +4,7 @@ use {
     std::io::{Read, Write},
 };
 
-#[derive(Debug, Clone, Copy, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 pub enum DirectPlace {
     #[display("stack[-{}]", offset + 1)]
     StackTop { offset: usize },
@@ -21,27 +21,32 @@ impl DirectPlace {
     }
 }
 
-#[derive(Debug, Clone, Copy, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 pub enum IndirectPlace {
-    #[display("heap[{address}]")]
-    Heap { address: DirectPlace },
+    #[display("*{address}")]
+    Deref { address: DirectPlace },
 }
 
 impl IndirectPlace {
     fn resolve<'a>(&self, state: &'a mut MemoryState) -> &'a mut usize {
         match self {
-            IndirectPlace::Heap { address } => {
-                let index = *address.resolve(state);
-                if index >= state.heap.len() {
-                    state.heap.resize(index + 1, 0);
+            IndirectPlace::Deref { address } => {
+                let value = *address.resolve(state);
+                let index = value / 2;
+                if value % 2 == 0 {
+                    &mut state.stack[index]
+                } else {
+                    if index >= state.heap.len() {
+                        state.heap.resize(index + 1, 0);
+                    }
+                    &mut state.heap[index]
                 }
-                &mut state.heap[index]
             }
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 pub enum Place {
     Direct(DirectPlace),
     Indirect(IndirectPlace),
@@ -54,9 +59,16 @@ impl Place {
             Place::Indirect(place) => place.resolve(state),
         }
     }
+
+    fn resolve_ref(&self, state: &mut MemoryState) -> usize {
+        match self {
+            Place::Direct(DirectPlace::StackTop { offset }) => 2 * (state.stack.len() - offset - 1),
+            Place::Indirect(IndirectPlace::Deref { address }) => *address.resolve(state),
+        }
+    }
 }
 
-#[derive(Debug, Clone, Copy, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 pub enum Value {
     Immediate(usize),
     At(Place),
@@ -84,9 +96,19 @@ pub enum StoreMode {
 #[allow(unused)]
 #[derive(Debug, Clone)]
 pub enum Instruction {
-    Move {
+    Load {
+        src: Place,
+    },
+    LoadRef {
+        src: Place,
+    },
+    Store {
         dst: Place,
-        src: Value,
+        store_mode: StoreMode,
+    },
+    StoreImm {
+        dst: Place,
+        value: usize,
         store_mode: StoreMode,
     },
     GrowStack {
@@ -114,19 +136,36 @@ pub enum Instruction {
 
 impl Instruction {
     pub fn execute(&self, state: &mut MemoryState, depth: usize) {
-        match self {
-            Instruction::Move {
+        match *self {
+            Instruction::Load { ref src } => {
+                indented_println!(depth, "reg += {src};");
+                state.reg += *src.resolve(state);
+            }
+            Instruction::LoadRef { ref src } => {
+                indented_println!(depth, "reg += &{src};");
+                state.reg += src.resolve_ref(state)
+            }
+            Instruction::Store { dst, store_mode } => {
+                indented_println!(depth, "{dst} {store_mode} reg; reg = 0;");
+                let reg = std::mem::take(&mut state.reg);
+                let place = dst.resolve(state);
+                match store_mode {
+                    StoreMode::Replace => *place = reg,
+                    StoreMode::Add => *place += reg,
+                    StoreMode::Subtract => *place -= reg,
+                }
+            }
+            Instruction::StoreImm {
                 dst,
-                src,
+                value,
                 store_mode,
             } => {
-                indented_println!(depth, "{dst} {store_mode} {src};");
-                let src_value = src.resolve(state);
-                let dst_place = dst.resolve(state);
+                indented_println!(depth, "{dst} {store_mode} {value};");
+                let place = dst.resolve(state);
                 match store_mode {
-                    StoreMode::Replace => *dst_place = src_value,
-                    StoreMode::Add => *dst_place += src_value,
-                    StoreMode::Subtract => *dst_place -= src_value,
+                    StoreMode::Replace => *place = value,
+                    StoreMode::Add => *place += value,
+                    StoreMode::Subtract => *place -= value,
                 }
             }
             Instruction::GrowStack { amount } => {
@@ -137,7 +176,7 @@ impl Instruction {
                 indented_println!(depth, "stack.shrink_by({amount});");
                 state.stack.truncate(state.stack.len() - amount);
             }
-            Instruction::While { cond, body } => {
+            Instruction::While { ref cond, ref body } => {
                 indented_println!(depth, "while {cond} {{");
                 let mut i = 0;
                 while *cond.resolve(state) != 0 {
@@ -151,9 +190,9 @@ impl Instruction {
                 indented_println!(depth, "}}");
             }
             Instruction::Switch {
-                cond,
-                cases,
-                default,
+                ref cond,
+                ref cases,
+                ref default,
             } => {
                 indented_println!(depth, "switch {cond} {{");
                 let case_index = *cond.resolve(state);
@@ -173,7 +212,7 @@ impl Instruction {
                 indented_println!(depth, "}}");
             }
             Instruction::Input { dst } => {
-                indented_print!(depth, "{dst} = getchar!(); // ");
+                indented_print!(depth, "{dst} = read_char!(); // ");
                 std::io::stdout().flush().unwrap();
                 let mut stdin = std::io::stdin().lock();
                 let mut buf = [0u8];
@@ -181,7 +220,7 @@ impl Instruction {
                 *dst.resolve(state) = usize::from(buf[0]);
             }
             Instruction::Output { src } => {
-                indented_print!(depth, "putchar!({src}); // ");
+                indented_print!(depth, "print_char!({src}); // ");
                 let mut stdout = std::io::stdout().lock();
                 stdout.flush().unwrap();
                 stdout.write_all(&[src.resolve(state) as u8]).unwrap();
@@ -205,6 +244,7 @@ impl Program {
         let mut state = MemoryState {
             stack: vec![],
             heap: vec![],
+            reg: 0,
         };
         for instruction in &self.instructions {
             instruction.execute(&mut state, 0);
@@ -217,6 +257,7 @@ impl Program {
 pub struct MemoryState {
     pub stack: Vec<usize>,
     pub heap: Vec<usize>,
+    pub reg: usize,
 }
 
 impl std::fmt::Display for MemoryState {

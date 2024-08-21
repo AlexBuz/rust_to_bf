@@ -92,7 +92,9 @@ static REG1_TO_SB: &str = "<<6<";
 impl IndirectPlace {
     pub fn path_to_and_from(&self) -> (String, Cow<'static, str>) {
         match self {
-            Heap { address } => {
+            Deref { address } => {
+                // TODO: support addressing both stack and heap
+
                 let mut sb_to_place = String::new();
 
                 // put the address in reg0
@@ -114,7 +116,7 @@ impl IndirectPlace {
 
     pub fn convert_load_to_bf(&self, output: &mut String) {
         match self {
-            Heap { .. } => {
+            Deref { .. } => {
                 let (sb_to_place, place_to_sb) = self.path_to_and_from();
                 output.push_str(&sb_to_place);
 
@@ -133,7 +135,7 @@ impl IndirectPlace {
 
     pub fn convert_store_to_bf(&self, output: &mut String, mode: StoreMode) {
         match self {
-            Heap { .. } => {
+            Deref { .. } => {
                 // move the value from reg0 to reg1 so that we can use reg0 to store the address
                 output.push_str(">>[-6>+6<]<<");
 
@@ -165,7 +167,7 @@ impl IndirectPlace {
 
     pub fn write_bf_symbols(&self, output: &mut String, symbols: &str) {
         match self {
-            Heap { .. } => {
+            Deref { .. } => {
                 let (sb_to_place, place_to_sb) = self.path_to_and_from();
 
                 output.push_str(&sb_to_place);
@@ -181,6 +183,17 @@ impl Place {
         match self {
             Direct(direct) => direct.convert_load_to_bf(output),
             Indirect(indirect) => indirect.convert_load_to_bf(output),
+        }
+    }
+
+    pub fn convert_load_ref_to_bf(&self, output: &mut String) {
+        match self {
+            Direct(_) => {
+                todo!("loading address of direct place");
+            }
+            Indirect(indirect) => match indirect {
+                Deref { address } => address.convert_load_to_bf(output),
+            },
         }
     }
 
@@ -205,33 +218,32 @@ impl Place {
         }
     }
 }
-
 impl Instruction {
     fn convert_to_bf(&self, output: &mut String) {
         // pointer is assumed to be at the stack base before and after each instruction
         match *self {
-            Move {
-                src,
+            Load { src } => {
+                src.convert_load_to_bf(output);
+            }
+            LoadRef { src } => {
+                src.convert_load_ref_to_bf(output);
+            }
+            Store { dst, store_mode } => {
+                dst.convert_store_to_bf(output, store_mode);
+            }
+            StoreImm {
                 dst,
+                value,
                 store_mode,
             } => {
-                match src {
-                    Immediate(value) => {
-                        dst.write_bf_symbols(
-                            output,
-                            &match store_mode {
-                                StoreMode::Add => "+".repeat(value),
-                                StoreMode::Subtract => "-".repeat(value),
-                                StoreMode::Replace => format!("[-]{}", "+".repeat(value)),
-                            },
-                        );
-                    }
-                    At(src) => {
-                        // TODO: perhaps specialize for the cases where src and dst are both direct stack locations or both direct heap locations
-                        src.convert_load_to_bf(output);
-                        dst.convert_store_to_bf(output, store_mode);
-                    }
-                }
+                dst.write_bf_symbols(
+                    output,
+                    &match store_mode {
+                        StoreMode::Add => "+".repeat(value),
+                        StoreMode::Subtract => "-".repeat(value),
+                        StoreMode::Replace => format!("[-]{}", "+".repeat(value)),
+                    },
+                );
             }
             GrowStack { amount } => {
                 if amount > 0 {
@@ -413,6 +425,10 @@ impl Program {
             assert_eq!(reg_i, 0);
             assert_eq!(temp_i, 0);
         }
-        MemoryState { stack, heap }
+        MemoryState {
+            stack,
+            heap,
+            reg: tape.get(2).copied().unwrap_or_default(),
+        }
     }
 }

@@ -24,7 +24,7 @@ fn size_of(ty: &Type, scope: &Scope) -> usize {
             .iter()
             .map(|field| size_of(&field.ty, scope))
             .sum(),
-        Type::Reference { .. } => 1,
+        Type::Ref { .. } => 1,
     }
 }
 
@@ -59,114 +59,12 @@ impl<'a, T> Typed<'a, T> {
     }
 }
 
-fn compile_path_access<'a>(
-    path: &ast::Path,
-    mutating: bool,
-    scope: &Scope<'a, '_>,
-) -> Typed<'a, ir::Place> {
-    let Some(var) = scope.vars.iter().rev().find(|var| var.name == path.root) else {
-        panic!("Variable `{}` not found.", path.root);
-    };
-    if mutating && !var.mutable {
-        panic!("Variable `{}` is not mutable.", path.root);
-    }
-    let mut ty = &var.ty;
-    let mut offset = scope.frame_size - var.frame_offset - 1;
-    for segment in &path.trail {
-        match *segment {
-            ast::FieldIdent::Index(index) => {
-                let Type::Tuple(tys) = ty else {
-                    panic!("Non-tuple type `{ty}` has no field at index `{index}`.");
-                };
-                ty = &tys[index];
-                for ty in &tys[index + 1..] {
-                    offset += size_of(ty, scope);
-                }
-            }
-            ast::FieldIdent::Named(ref field_name) => {
-                let Type::Named(ty_name) = ty else {
-                    panic!("Non-struct type `{ty}` has no field named `{field_name}`.");
-                };
-                let Some(struct_def) = scope.global.struct_defs.get(ty_name) else {
-                    panic!("Type `{ty_name}` not found.");
-                };
-                ty = struct_def
-                    .fields
-                    .iter()
-                    .rev()
-                    .find_map(|field| {
-                        if field.name == field_name {
-                            Some(&field.ty)
-                        } else {
-                            offset += size_of(&field.ty, scope);
-                            None
-                        }
-                    })
-                    .unwrap_or_else(|| {
-                        panic!("Field `{field_name}` not found in struct `{ty_name}`.")
-                    });
-            }
-        }
-    }
-    Typed::new(
-        ty.clone(),
-        ir::Place::Direct(ir::DirectPlace::StackTop { offset }),
-    )
-}
-
-fn compile_place<'a>(
-    place: &ast::Place,
-    mutating: bool,
-    scope: &Scope<'a, '_>,
-) -> Typed<'a, ir::Place> {
-    match place {
-        ast::Place::Path(path) => compile_path_access(path, mutating, scope),
-        ast::Place::Deref(_) => {
-            todo!("dereferencing");
-        }
-    }
-}
-
-fn compile_simple_expr<'a>(
-    simple_expr: &'a ast::SimpleExpr,
-    scope: &mut Scope<'a, '_>,
-) -> Typed<'a, ir::Value> {
-    match *simple_expr {
-        ast::SimpleExpr::Int(i) => Typed::new(Type::Usize, ir::Value::Immediate(i)),
-        ast::SimpleExpr::String(ref s) => Typed::new(
-            Type::Usize,
-            ir::Value::Immediate(*scope.global.string_ids.entry(s).or_insert_with(|| {
-                scope.global.frags.push(
-                    [ir::Instruction::ShrinkStack { amount: 1 }]
-                        .into_iter()
-                        .chain(s.bytes().map(|byte| ir::Instruction::Output {
-                            src: ir::Value::Immediate(byte as _),
-                        }))
-                        .collect(),
-                );
-                scope.global.frags.len() - 1
-            })),
-        ),
-        ast::SimpleExpr::Place(ref place) => compile_place(place, false, scope).map(ir::Value::At),
-        ast::SimpleExpr::AddrOf { mutable, ref place } => {
-            let place = compile_place(place, mutable, scope);
-            Typed::new(
-                Type::Reference {
-                    mutable,
-                    ty: Box::new(place.ty),
-                },
-                ir::Value::At(todo!("AddrOf")),
-            )
-        }
-    }
-}
-
 fn push_imm(value: usize) -> [ir::Instruction; 2] {
     [
         ir::Instruction::GrowStack { amount: 1 },
-        ir::Instruction::Move {
+        ir::Instruction::StoreImm {
             dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
-            src: ir::Value::Immediate(value),
+            value,
             store_mode: ir::StoreMode::Add,
         },
     ]
@@ -225,7 +123,7 @@ fn compile_intrinsic_call<'a>(
             }
             for arg in args {
                 match arg {
-                    ast::Expr::Simple(ast::SimpleExpr::String(s)) => {
+                    ast::Expr::String(s) => {
                         scope.global.frags[*cur_frag].extend(s.bytes().map(|byte| {
                             ir::Instruction::Output {
                                 src: ir::Value::Immediate(byte as _),
@@ -261,7 +159,7 @@ fn compile_intrinsic_call<'a>(
                 panic!("`{name}` requires at least 1 argument");
             };
             let format_string = match first_arg {
-                ast::Expr::Simple(ast::SimpleExpr::String(s)) => s,
+                ast::Expr::String(s) => s,
                 _ => panic!("First argument to `{name}` must be a string literal"),
             };
             let mut format_chars = format_string.bytes();
@@ -464,29 +362,179 @@ fn compile_tuple_expr<'a>(
     )
 }
 
+fn compute_trail_offset<'a>(
+    mut ty: &Type<'a>,
+    trail: &'a [ast::FieldIdent],
+    scope: &Scope<'a, '_>,
+) -> Typed<'a, usize> {
+    let mut offset = 0;
+    for segment in trail {
+        match *segment {
+            ast::FieldIdent::Index(index) => {
+                let Type::Tuple(tys) = ty else {
+                    panic!("Non-tuple type `{ty}` has no field at index `{index}`.");
+                };
+                ty = &tys[index];
+                for ty in &tys[index + 1..] {
+                    offset += size_of(ty, scope);
+                }
+            }
+            ast::FieldIdent::Named(ref field_name) => {
+                let Type::Named(ty_name) = ty else {
+                    panic!("Non-struct type `{ty}` has no field named `{field_name}`.");
+                };
+                let Some(struct_def) = scope.global.struct_defs.get(ty_name) else {
+                    panic!("Type `{ty_name}` not found.");
+                };
+                ty = struct_def
+                    .fields
+                    .iter()
+                    .rev()
+                    .find_map(|field| {
+                        if field.name == field_name {
+                            Some(&field.ty)
+                        } else {
+                            offset += size_of(&field.ty, scope);
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("Field `{field_name}` not found in struct `{ty_name}`.")
+                    });
+            }
+        }
+    }
+    Typed::new(ty.clone(), offset)
+}
+
+fn compile_var_access<'a>(
+    path: &'a ast::Path,
+    mutating: bool,
+    scope: &Scope<'a, '_>,
+) -> Typed<'a, ir::DirectPlace> {
+    let Some(var) = scope.vars.iter().rev().find(|var| var.name == path.root) else {
+        panic!("Variable `{}` not found.", path.root);
+    };
+    if mutating && !var.mutable {
+        panic!("Variable `{}` is not mutable.", path.root);
+    }
+    compute_trail_offset(&var.ty, &path.trail, scope).map(|offset| ir::DirectPlace::StackTop {
+        offset: scope.frame_size - var.frame_offset - 1 + offset,
+    })
+}
+
+fn compile_place<'a>(
+    place: &'a ast::Place,
+    mutating: bool,
+    scope: &mut Scope<'a, '_>,
+) -> Typed<'a, ir::Place> {
+    match place {
+        ast::Place::Path(path) => compile_var_access(path, mutating, scope).map(ir::Place::Direct),
+        ast::Place::Deref(path) => match compile_var_access(path, false, scope) {
+            Typed {
+                ty: Type::Ref { mutable, ty },
+                value,
+            } => {
+                if mutating && !mutable {
+                    panic!("Cannot mutate immutable reference");
+                }
+                Typed::new(
+                    *ty,
+                    ir::Place::Indirect(ir::IndirectPlace::Deref { address: value }),
+                )
+            }
+            Typed { ty, .. } => panic!("Expected reference but got `{ty}`"),
+        },
+    }
+}
+
+fn compile_ref<'a>(
+    mutable: bool,
+    place: &'a ast::Place,
+    scope: &mut Scope<'a, '_>,
+    cur_frag: &mut FragId,
+) -> Typed<'a, ir::Value> {
+    let place = compile_place(place, mutable, scope);
+    scope.global.frags[*cur_frag].extend([
+        ir::Instruction::LoadRef { src: place.value },
+        ir::Instruction::GrowStack { amount: 1 },
+        ir::Instruction::Store {
+            dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
+            store_mode: ir::StoreMode::Add,
+        },
+    ]);
+    scope.frame_size += 1;
+    Typed::new(
+        Type::Ref {
+            mutable,
+            ty: Box::new(place.ty),
+        },
+        stack_top(0),
+    )
+}
+
+fn compile_int<'a>(value: usize) -> Typed<'a, ir::Value> {
+    Typed::new(Type::Usize, ir::Value::Immediate(value))
+}
+
+fn compile_string<'a>(s: &'a str, scope: &mut Scope<'a, '_>) -> Typed<'a, ir::Value> {
+    Typed::new(
+        Type::Usize,
+        ir::Value::Immediate(*scope.global.string_ids.entry(s).or_insert_with(|| {
+            scope.global.frags.push(
+                [ir::Instruction::ShrinkStack { amount: 1 }]
+                    .into_iter()
+                    .chain(s.bytes().map(|byte| ir::Instruction::Output {
+                        src: ir::Value::Immediate(byte as _),
+                    }))
+                    .collect(),
+            );
+            scope.global.frags.len() - 1
+        })),
+    )
+}
+
 fn compile_expr<'a>(
     expr: &'a ast::Expr,
     scope: &mut Scope<'a, '_>,
     cur_frag: &mut FragId,
 ) -> Typed<'a, ir::Value> {
-    match expr {
-        ast::Expr::Simple(simple_expr) => compile_simple_expr(simple_expr, scope),
-        ast::Expr::Call(call_expr) => compile_call(call_expr, scope, cur_frag),
-        ast::Expr::Struct(struct_expr) => compile_struct_expr(struct_expr, scope, cur_frag),
-        ast::Expr::Tuple(tuple_expr) => compile_tuple_expr(tuple_expr, scope, cur_frag),
+    match *expr {
+        ast::Expr::Int(i) => compile_int(i),
+        ast::Expr::String(ref s) => compile_string(s, scope),
+        ast::Expr::Place(ref place) => compile_place(place, false, scope).map(ir::Value::At),
+        ast::Expr::Ref { mutable, ref place } => compile_ref(mutable, place, scope, cur_frag),
+        ast::Expr::Call(ref call_expr) => compile_call(call_expr, scope, cur_frag),
+        ast::Expr::Struct(ref struct_expr) => compile_struct_expr(struct_expr, scope, cur_frag),
+        ast::Expr::Tuple(ref tuple_expr) => compile_tuple_expr(tuple_expr, scope, cur_frag),
     }
 }
 
-fn type_of_simple_expr<'a>(simple_expr: &'a ast::SimpleExpr, scope: &Scope<'a, '_>) -> Type<'a> {
-    match *simple_expr {
-        ast::SimpleExpr::Int(_) => Type::Usize,
-        ast::SimpleExpr::String(_) => Type::Usize,
-        ast::SimpleExpr::Place(ref place) => compile_place(place, false, scope).ty,
-        ast::SimpleExpr::AddrOf { mutable, ref place } => Type::Reference {
-            mutable,
-            ty: Box::new(compile_place(place, mutable, scope).ty),
-        },
+fn compile_expr_and_push<'a>(
+    expr: &'a ast::Expr,
+    scope: &mut Scope<'a, '_>,
+    cur_frag: &mut FragId,
+) -> Typed<'a, ()> {
+    let orig_frame_size = scope.frame_size;
+    let mut result = compile_expr(expr, scope, cur_frag);
+    let size = size_of(&result.ty, scope);
+    if scope.frame_size < orig_frame_size + size || result.value != stack_top(0) {
+        scope.grow_frame(size, *cur_frag);
+        if !matches!(result.value, ir::Value::Immediate(_)) {
+            // recompile to account for the new frame size
+            // TODO: remove the need for this by making stack offsets relative to the frame base
+            result = compile_expr(expr, scope, cur_frag);
+        }
+        compile_move(
+            ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
+            result.value,
+            ir::StoreMode::Add,
+            &result.ty,
+            scope,
+            *cur_frag,
+        );
     }
+    Typed::new(result.ty, ())
 }
 
 fn increment_place(place: ir::Place) -> ir::Place {
@@ -510,68 +558,35 @@ fn compile_move<'a>(
 ) {
     match size_of(ty, scope) {
         0 => {}
-        1 => scope.global.frags[cur_frag].push(ir::Instruction::Move {
-            dst,
-            src,
-            store_mode,
-        }),
+        1 => match src {
+            ir::Value::Immediate(value) => {
+                scope.global.frags[cur_frag].extend([ir::Instruction::StoreImm {
+                    dst,
+                    value,
+                    store_mode,
+                }]);
+            }
+            ir::Value::At(src) => {
+                scope.global.frags[cur_frag].extend([
+                    ir::Instruction::Load { src },
+                    ir::Instruction::Store { dst, store_mode },
+                ]);
+            }
+        },
         size => {
             let ir::Value::At(mut src) = src else {
                 unreachable!("Expected source value to be a place in a move of size > 1");
             };
             for _ in 0..size {
-                scope.global.frags[cur_frag].push(ir::Instruction::Move {
-                    dst,
-                    src: ir::Value::At(src),
-                    store_mode,
-                });
+                scope.global.frags[cur_frag].extend([
+                    ir::Instruction::Load { src },
+                    ir::Instruction::Store { dst, store_mode },
+                ]);
                 dst = increment_place(dst);
                 src = increment_place(src);
             }
         }
     }
-}
-
-fn compile_expr_and_push<'a>(
-    expr: &'a ast::Expr,
-    scope: &mut Scope<'a, '_>,
-    cur_frag: &mut FragId,
-) -> Typed<'a, ()> {
-    let ty = match expr {
-        ast::Expr::Simple(simple_expr) => {
-            scope.grow_frame(
-                size_of(&type_of_simple_expr(simple_expr, scope), scope),
-                *cur_frag,
-            );
-            let src = compile_simple_expr(simple_expr, scope);
-            compile_move(
-                ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
-                src.value,
-                ir::StoreMode::Replace,
-                &src.ty,
-                scope,
-                *cur_frag,
-            );
-            src.ty
-        }
-        ast::Expr::Call(call_expr) => {
-            let ret = compile_call(call_expr, scope, cur_frag);
-            match ret.value {
-                ir::Value::At(ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 })) => {}
-                ir::Value::Immediate(value) => {
-                    scope.frame_size += 1;
-                    scope.global.frags[*cur_frag].extend(push_imm(value));
-                }
-                _ => unreachable!(
-                    "Return value should always either be immediate or on the top of the stack"
-                ),
-            }
-            ret.ty
-        }
-        ast::Expr::Struct(struct_expr) => compile_struct_expr(struct_expr, scope, cur_frag).ty,
-        ast::Expr::Tuple(tuple_expr) => compile_tuple_expr(tuple_expr, scope, cur_frag).ty,
-    };
-    Typed::new(ty, ())
 }
 
 fn compile_store_mode(mode: ast::AssignMode) -> ir::StoreMode {
@@ -744,7 +759,9 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                 }
                 _ => {
                     let src = compile_expr(value, scope, &mut cur_frag);
+                    let frame_size = scope.frame_size;
                     let dst = compile_place(place, true, scope);
+                    assert!(frame_size == scope.frame_size);
                     if src.ty != dst.ty {
                         panic!(
                             "Cannot assign value of type `{}` to place of type `{}`.",
@@ -955,7 +972,7 @@ enum Type<'a> {
     Usize,
     Tuple(Vec<Type<'a>>),
     Named(&'a str),
-    Reference { mutable: bool, ty: Box<Type<'a>> },
+    Ref { mutable: bool, ty: Box<Type<'a>> },
 }
 
 impl Type<'_> {
@@ -983,7 +1000,7 @@ impl std::fmt::Display for Type<'_> {
                 write!(f, ")")
             }
             Type::Named(name) => write!(f, "{}", name),
-            Type::Reference { mutable, ref ty } => {
+            Type::Ref { mutable, ref ty } => {
                 write!(f, "&")?;
                 if mutable {
                     write!(f, "mut ")?;
@@ -1002,7 +1019,7 @@ impl<'a> From<&'a ast::Type> for Type<'a> {
                 "usize" => Type::Usize,
                 _ => Type::Named(name),
             },
-            ast::Type::Reference { mutable, ref ty } => Type::Reference {
+            ast::Type::Ref { mutable, ref ty } => Type::Ref {
                 mutable,
                 ty: Box::new(Type::from(ty.as_ref())),
             },
@@ -1093,9 +1110,9 @@ pub fn compile(ast: &ast::Ast) -> ir::Program {
     ir::Program {
         instructions: vec![
             ir::Instruction::GrowStack { amount: 3 },
-            ir::Instruction::Move {
+            ir::Instruction::StoreImm {
                 dst: ir::Place::Direct(ir::DirectPlace::StackTop { offset: 0 }),
-                src: ir::Value::Immediate(main_func_id),
+                value: main_func_id,
                 store_mode: ir::StoreMode::Add,
             },
             ir::Instruction::While {
