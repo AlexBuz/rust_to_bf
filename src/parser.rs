@@ -61,8 +61,10 @@ where
     ))
 }
 
-fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
-    recursive(move |expr| {
+fn expr_parser(
+    deny_top_level_empty_struct: bool,
+) -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
+    recursive(move |expr_parser| {
         let ref_expr = just(Token::And)
             .ignore_then(maybe_token(Token::Mut))
             .or_not()
@@ -75,48 +77,53 @@ fn expr_parser() -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
         let call_expr = ident_parser()
             .then(just(Token::Bang).or_not().map(|i| i.is_some()))
             .then(
-                expr.clone()
+                expr_parser
+                    .clone()
                     .separated_by(just(Token::Comma))
                     .allow_trailing()
                     .delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
             )
             .map(|((func, bang), args)| Expr::Call(CallExpr { func, bang, args }));
 
-        let struct_expr = ident_parser()
-            .then(
-                ident_parser()
-                    .then(just(Token::Colon).ignore_then(expr.clone()).or_not())
-                    .separated_by(just(Token::Comma))
-                    .allow_trailing()
-                    .delimited_by(just(Token::OpenBrace), just(Token::CloseBrace)),
-            )
-            .map(|(name, fields)| {
-                Expr::Struct(StructExpr {
-                    name,
-                    fields: fields
-                        .into_iter()
-                        .map(|(name, value)| Field {
-                            value: value.unwrap_or_else(|| {
-                                Expr::Place(Place::Path(Path {
-                                    root: name.clone(),
-                                    trail: vec![],
-                                }))
-                            }),
-                            name,
-                        })
-                        .collect(),
+        let struct_expr = |min_fields| {
+            ident_parser()
+                .then(
+                    ident_parser()
+                        .then(just(Token::Colon).ignore_then(expr_parser.clone()).or_not())
+                        .separated_by(just(Token::Comma))
+                        .allow_trailing()
+                        .at_least(min_fields)
+                        .delimited_by(just(Token::OpenBrace), just(Token::CloseBrace)),
+                )
+                .map(|(name, fields)| {
+                    Expr::Struct(StructExpr {
+                        name,
+                        fields: fields
+                            .into_iter()
+                            .map(|(name, value)| Field {
+                                value: value.unwrap_or_else(|| {
+                                    Expr::Place(Place::Path(Path {
+                                        root: name.clone(),
+                                        trail: vec![],
+                                    }))
+                                }),
+                                name,
+                            })
+                            .collect(),
+                    })
                 })
-            });
+        };
 
         let prec = choice((
             call_expr,
-            struct_expr,
-            tuple_parser(expr.clone()).map(Expr::Tuple),
+            struct_expr(deny_top_level_empty_struct as usize),
+            tuple_parser(expr_parser.clone()).map(Expr::Tuple),
             place_parser().map(Expr::Place),
             int_parser().map(Expr::Int),
             string_parser().map(Expr::String),
             ref_expr,
-            expr.delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
+            (struct_expr(0).or(expr_parser))
+                .delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
         ));
 
         let prec = just(Token::Bang)
@@ -220,7 +227,7 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
         .ignore_then(maybe_token(Token::Mut))
         .then(ident_parser())
         .then(just(Token::Colon).ignore_then(type_parser()).or_not())
-        .then(just(Token::Eq).ignore_then(expr_parser()).or_not())
+        .then(just(Token::Eq).ignore_then(expr_parser(false)).or_not())
         .map(|(((mutable, name), ty), value)| Statement::Let {
             mutable,
             name,
@@ -234,7 +241,7 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
             just(Token::MinusEq).to(AssignMode::Subtract),
             just(Token::Eq).to(AssignMode::Replace),
         ]))
-        .then(expr_parser())
+        .then(expr_parser(false))
         .map(|((place, mode), value)| Statement::Assign { place, value, mode });
 
     let arithmetic_assign = place_parser()
@@ -243,7 +250,7 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
             just(Token::SlashEq).to("/"),
             just(Token::PercentEq).to("%"),
         ]))
-        .then(expr_parser())
+        .then(expr_parser(false))
         .map(|((place, op), value)| Statement::Assign {
             place: place.clone(),
             value: Expr::Call(CallExpr {
@@ -265,7 +272,7 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
             just(Token::AndAndEq).to(ShortCircuitOp::And),
             just(Token::OrOrEq).to(ShortCircuitOp::Or),
         ]))
-        .then(expr_parser())
+        .then(expr_parser(false))
         .map(|((place, op), value)| {
             let [short_circuit, long_circuit] = [
                 vec![],
@@ -289,29 +296,29 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
     let assign = choice((primitive_assign, arithmetic_assign, short_circuit_assign));
 
     let r#return = just(Token::Return)
-        .ignore_then(expr_parser().or_not().map(Option::unwrap_or_default))
+        .ignore_then(expr_parser(false).or_not().map(Option::unwrap_or_default))
         .map(Statement::Return);
 
     let r#break = just(Token::Break).to(Statement::Break);
 
     let r#continue = just(Token::Continue).to(Statement::Continue);
 
-    let eval = expr_parser().map(Statement::Eval);
+    let eval = expr_parser(false).map(Statement::Eval);
 
     choice((r#let, assign, r#return, r#break, r#continue, eval))
 }
 
 fn block_parser() -> impl Parser<Token, Vec<Statement>, Error = Simple<Token>> + Clone {
-    recursive(move |block| {
+    recursive(move |block_parser| {
         let if_else = recursive(|if_else| {
             just(Token::If)
-                .ignore_then(expr_parser())
-                .then(block.clone())
+                .ignore_then(expr_parser(true))
+                .then(block_parser.clone())
                 .then(
                     just(Token::Else)
                         .ignore_then(choice((
                             if_else.map(|statement| vec![statement]),
-                            block.clone(),
+                            block_parser.clone(),
                         )))
                         .or_not(),
                 )
@@ -323,12 +330,12 @@ fn block_parser() -> impl Parser<Token, Vec<Statement>, Error = Simple<Token>> +
         });
 
         let r#loop = just(Token::Loop)
-            .ignore_then(block.clone())
+            .ignore_then(block_parser.clone())
             .map(Statement::Loop);
 
         let r#while = just(Token::While)
-            .ignore_then(expr_parser())
-            .then(block.clone())
+            .ignore_then(expr_parser(true))
+            .then(block_parser.clone())
             .map(|(cond, body)| {
                 Statement::Loop(vec![Statement::Switch {
                     cond,
@@ -346,7 +353,7 @@ fn block_parser() -> impl Parser<Token, Vec<Statement>, Error = Simple<Token>> +
             );
 
             let switch = just(Token::Match)
-                .ignore_then(expr_parser())
+                .ignore_then(expr_parser(true))
                 .then(
                     int_parser()
                         .then(arm.clone())
@@ -370,7 +377,7 @@ fn block_parser() -> impl Parser<Token, Vec<Statement>, Error = Simple<Token>> +
                 r#loop,
                 r#while,
                 switch,
-                block.map(Statement::Block),
+                block_parser.map(Statement::Block),
             ))
         });
 
