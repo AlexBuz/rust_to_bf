@@ -304,11 +304,10 @@ fn compile_call<'a>(
     scope: &mut Scope<'a, '_>,
     cur_frag: &mut FragId,
 ) -> Typed<'a, ir::Value> {
-    let name = call_expr.func.as_str();
     if call_expr.bang {
-        compile_intrinsic_call(name, &call_expr.args, scope, cur_frag)
+        compile_intrinsic_call(&call_expr.func, &call_expr.args, scope, cur_frag)
     } else {
-        compile_func_call(name, &call_expr.args, scope, cur_frag)
+        compile_func_call(&call_expr.func, &call_expr.args, scope, cur_frag)
     }
 }
 
@@ -317,9 +316,10 @@ fn compile_struct_expr<'a>(
     scope: &mut Scope<'a, '_>,
     cur_frag: &mut FragId,
 ) -> Typed<'a, ir::Value> {
-    let Some(struct_def) = scope.global.struct_defs.get(struct_expr.name.as_str()) else {
+    let Some(struct_def) = scope.global.struct_defs.get(&*struct_expr.name) else {
         panic!("Type `{}` not found.", struct_expr.name);
     };
+
     if struct_expr.fields.len() != struct_def.fields.len() {
         panic!(
             "Struct `{}` has {} fields, but {} were provided.",
@@ -328,19 +328,65 @@ fn compile_struct_expr<'a>(
             struct_expr.fields.len()
         );
     }
-    // TODO: add support for initializing fields in arbitrary order
-    let orig_frame_offset = scope.frame_offset;
-    for (field_def, field) in struct_def.fields.iter().zip(&struct_expr.fields) {
-        if field_def.name != field.name {
-            panic!(
-                "Expected field `{}` but got `{}`.",
-                field_def.name, field.name
-            );
-        }
-        compile_expr_and_push(&field.value, scope, cur_frag).expect(&field_def.ty);
+
+    struct FieldInfo<'a> {
+        ty: &'a Type<'a>,
+        frame_offset: usize,
     }
+
+    let struct_frame_offset = scope.frame_offset;
+
+    let mut expected_fields: BTreeMap<&str, Option<FieldInfo>> = struct_def
+        .fields
+        .iter()
+        .scan(struct_frame_offset, |frame_offset, field| {
+            let info = Some((
+                field.name,
+                Some(FieldInfo {
+                    ty: &field.ty,
+                    frame_offset: *frame_offset,
+                }),
+            ));
+            *frame_offset += scope.size_of(&field.ty);
+            info
+        })
+        .collect();
+
+    for field in &struct_expr.fields {
+        let Some(expected_field) = expected_fields.get_mut(&*field.name).map(Option::take) else {
+            panic!(
+                "Field `{}` not found in struct `{}`.",
+                field.name, struct_expr.name
+            );
+        };
+        let Some(field_info) = expected_field else {
+            panic!("Field `{}` specified more than once.", field.name);
+        };
+        match scope.frame_offset.cmp(&field_info.frame_offset) {
+            Less | Equal => {
+                scope.frame_offset = field_info.frame_offset;
+                compile_expr_and_push(&field.value, scope, cur_frag).expect(field_info.ty);
+            }
+            Greater => {
+                let prev_frame_offset = scope.frame_offset;
+                compile_expr_and_push(&field.value, scope, cur_frag).expect(field_info.ty);
+                compile_move(
+                    ir::Place::Direct(ir::DirectPlace::StackFrame {
+                        offset: field_info.frame_offset,
+                    }),
+                    stack_value_at(prev_frame_offset),
+                    ir::StoreMode::Replace,
+                    field_info.ty,
+                    scope,
+                    *cur_frag,
+                );
+                scope.frame_offset = prev_frame_offset;
+            }
+        }
+    }
+
     Typed::new(
-        stack_value_at(orig_frame_offset),
+        stack_value_at(struct_frame_offset),
         Type::Named(&struct_expr.name),
     )
 }
@@ -952,7 +998,7 @@ static STD: LazyLock<ast::Ast> = LazyLock::new(|| {
         let ast::Item::FuncDef { name, .. } = item else {
             continue;
         };
-        let op = match name.as_str() {
+        let op = match &**name {
             "add" => "+",
             "sub" => "-",
             "mul" => "*",
@@ -1022,7 +1068,7 @@ impl<'a> From<&'a ast::Type> for Type<'a> {
     fn from(ty: &'a ast::Type) -> Self {
         match *ty {
             ast::Type::Tuple(ref tys) => Type::Tuple(tys.iter().map(Type::from).collect()),
-            ast::Type::Named(ref name) => match name.as_str() {
+            ast::Type::Named(ref name) => match &**name {
                 "usize" => Type::Usize,
                 _ => Type::Named(name),
             },
@@ -1058,8 +1104,8 @@ struct StructDef<'a> {
 }
 
 pub fn compile(ast: &ast::Ast) -> ir::Program {
-    let mut func_defs = BTreeMap::new();
-    let mut struct_defs = BTreeMap::new();
+    let mut func_defs = BTreeMap::<&str, FuncDef>::new();
+    let mut struct_defs = BTreeMap::<&str, StructDef>::new();
 
     for item in STD.items.iter().chain(&ast.items) {
         match item {
@@ -1070,34 +1116,32 @@ pub fn compile(ast: &ast::Ast) -> ir::Program {
                 body,
             } => {
                 let func_def = FuncDef {
-                    // name: name.as_str(),
                     params: params
                         .iter()
                         .map(|param| Param {
                             mutable: param.mutable,
-                            name: param.name.as_str(),
+                            name: &param.name,
                             ty: Type::from(&param.ty),
                         })
                         .collect(),
                     ret_ty: Type::from(ret_ty),
                     body: body.clone(),
                 };
-                if func_defs.insert(name.as_str(), func_def).is_some() {
+                if func_defs.insert(name, func_def).is_some() {
                     panic!("Function `{name}` already defined.");
                 }
             }
             ast::Item::StructDef { name, fields } => {
                 let struct_def = StructDef {
-                    // name: name.as_str(),
                     fields: fields
                         .iter()
                         .map(|field| Field {
-                            name: field.name.as_str(),
+                            name: &field.name,
                             ty: Type::from(&field.ty),
                         })
                         .collect(),
                 };
-                if struct_defs.insert(name.as_str(), struct_def).is_some() {
+                if struct_defs.insert(name, struct_def).is_some() {
                     panic!("Type `{name}` already defined.");
                 }
             }
