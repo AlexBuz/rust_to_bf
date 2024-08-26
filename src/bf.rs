@@ -30,11 +30,11 @@ Memory layout: [
 
 impl DirectPlace {
     pub fn path_to_and_from(&self) -> (String, Cow<'static, str>) {
-        match self {
-            StackTop { offset } => {
-                let sb_to_place = format!("6>[6>]<<{}", "6<".repeat(offset + 1));
-                let place_to_sb = "4<[6<]";
-                (sb_to_place, Cow::Borrowed(place_to_sb))
+        match *self {
+            StackFrame { offset } => {
+                let sb_to_place = format!("6>[6>]<<{}", "6>".repeat(offset));
+                let place_to_sb = format!("{}4<[6<]", "6<".repeat(offset));
+                (sb_to_place, Cow::Owned(place_to_sb))
             }
         }
     }
@@ -245,17 +245,17 @@ impl Instruction {
                     },
                 );
             }
-            GrowStack { amount } => {
-                if amount > 0 {
+            SaveFrame { size } => {
+                if size > 0 {
                     output.push_str("6>[6>]+");
-                    output.push_str(&"6>+".repeat(amount - 1));
+                    output.push_str(&"6>+".repeat(size - 1));
                     output.push_str("[6<]");
                 }
             }
-            ShrinkStack { amount } => {
-                if amount > 0 {
+            RestoreFrame { size } => {
+                if size > 0 {
                     output.push_str("6>[6>]6<");
-                    output.push_str(&"-<<[-]4<".repeat(amount));
+                    output.push_str(&"-6<".repeat(size));
                     output.push_str("[6<]");
                 }
             }
@@ -426,9 +426,10 @@ impl Program {
             assert_eq!(temp_i, 0);
         }
         MemoryState {
+            frame_base: stack.len(),
+            reg: tape.get(2).copied().unwrap_or_default(),
             stack,
             heap,
-            reg: tape.get(2).copied().unwrap_or_default(),
         }
     }
 }

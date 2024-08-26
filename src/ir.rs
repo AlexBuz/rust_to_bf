@@ -6,15 +6,18 @@ use {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 pub enum DirectPlace {
-    #[display("stack[-{}]", offset + 1)]
-    StackTop { offset: usize },
+    #[display("stack_frame[{}]", offset)]
+    StackFrame { offset: usize },
 }
 
 impl DirectPlace {
     fn resolve<'a>(&self, state: &'a mut MemoryState) -> &'a mut usize {
         match self {
-            DirectPlace::StackTop { offset } => {
-                let index = state.stack.len() - offset - 1;
+            DirectPlace::StackFrame { offset } => {
+                let index = state.frame_base + offset;
+                if index >= state.stack.len() {
+                    state.stack.resize(index + 1, 0);
+                }
                 &mut state.stack[index]
             }
         }
@@ -62,7 +65,7 @@ impl Place {
 
     fn resolve_ref(&self, state: &mut MemoryState) -> usize {
         match self {
-            Place::Direct(DirectPlace::StackTop { offset }) => 2 * (state.stack.len() - offset - 1),
+            Place::Direct(DirectPlace::StackFrame { offset }) => 2 * (state.frame_base + offset),
             Place::Indirect(IndirectPlace::Deref { address }) => *address.resolve(state),
         }
     }
@@ -111,11 +114,11 @@ pub enum Instruction {
         value: usize,
         store_mode: StoreMode,
     },
-    GrowStack {
-        amount: usize,
+    SaveFrame {
+        size: usize,
     },
-    ShrinkStack {
-        amount: usize,
+    RestoreFrame {
+        size: usize,
     },
     While {
         cond: Place,
@@ -151,8 +154,8 @@ impl Instruction {
                 let place = dst.resolve(state);
                 match store_mode {
                     StoreMode::Replace => *place = reg,
-                    StoreMode::Add => *place += reg,
-                    StoreMode::Subtract => *place -= reg,
+                    StoreMode::Add => *place = place.wrapping_add(reg),
+                    StoreMode::Subtract => *place = place.wrapping_sub(reg),
                 }
             }
             Instruction::StoreImm {
@@ -164,17 +167,20 @@ impl Instruction {
                 let place = dst.resolve(state);
                 match store_mode {
                     StoreMode::Replace => *place = value,
-                    StoreMode::Add => *place += value,
-                    StoreMode::Subtract => *place -= value,
+                    StoreMode::Add => *place = place.wrapping_add(value),
+                    StoreMode::Subtract => *place = place.wrapping_sub(value),
                 }
             }
-            Instruction::GrowStack { amount } => {
-                indented_println!(depth, "stack.grow_by({amount});");
-                state.stack.resize(state.stack.len() + amount, 0);
+            Instruction::SaveFrame { size } => {
+                indented_println!(depth, "stack.grow_by({size});");
+                state.frame_base += size;
+                if state.stack.len() < state.frame_base {
+                    state.stack.resize(state.frame_base, 0);
+                }
             }
-            Instruction::ShrinkStack { amount } => {
-                indented_println!(depth, "stack.shrink_by({amount});");
-                state.stack.truncate(state.stack.len() - amount);
+            Instruction::RestoreFrame { size } => {
+                indented_println!(depth, "stack.shrink_by({size});");
+                state.frame_base -= size;
             }
             Instruction::While { ref cond, ref body } => {
                 indented_println!(depth, "while {cond} {{");
@@ -229,6 +235,7 @@ impl Instruction {
             }
         }
         indented_println!(depth, "stack: {:?}", state.stack);
+        indented_println!(depth, "frame: {:?}", &state.stack[state.frame_base..]);
         indented_println!(depth, "heap: {:?}", state.heap);
         indented_println!();
     }
@@ -242,9 +249,10 @@ pub struct Program {
 impl Program {
     pub fn execute(&self) -> MemoryState {
         let mut state = MemoryState {
+            frame_base: 0,
+            reg: 0,
             stack: vec![],
             heap: vec![],
-            reg: 0,
         };
         for instruction in &self.instructions {
             instruction.execute(&mut state, 0);
@@ -255,14 +263,16 @@ impl Program {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryState {
+    pub frame_base: usize,
+    pub reg: usize,
     pub stack: Vec<usize>,
     pub heap: Vec<usize>,
-    pub reg: usize,
 }
 
 impl std::fmt::Display for MemoryState {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         writeln!(f, "stack: {:?}", self.stack)?;
+        writeln!(f, "frame: {:?}", &self.stack[self.frame_base..])?;
         write!(f, "heap: {:?}", self.heap)?;
         Ok(())
     }
