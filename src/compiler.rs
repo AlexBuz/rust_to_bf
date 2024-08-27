@@ -584,14 +584,37 @@ fn compile_expr_and_push<'a>(
     )
 }
 
-fn increment_place(place: ir::Place) -> ir::Place {
+fn increment_place(place: &mut ir::Place, cur_frag: &mut Vec<ir::Instruction>) {
     match place {
         ir::Place::Direct(ir::DirectPlace::StackFrame { offset }) => {
-            ir::Place::Direct(ir::DirectPlace::StackFrame { offset: offset + 1 })
+            *offset += 1;
         }
-        ir::Place::Indirect(_) => {
-            todo!("incrementing indirect places")
+        ir::Place::Indirect(ir::IndirectPlace::Deref { address }) => {
+            cur_frag.push(ir::Instruction::StoreImm {
+                dst: ir::Place::Direct(*address),
+                value: 2,
+                store_mode: ir::StoreMode::Add,
+            });
         }
+    }
+}
+
+fn own_place(place: &mut ir::Place, cur_frag: &mut Vec<ir::Instruction>, frame_offset: &mut usize) {
+    if let ir::Place::Indirect(ir::IndirectPlace::Deref { address }) = place {
+        let owned_address = ir::DirectPlace::StackFrame {
+            offset: *frame_offset,
+        };
+        cur_frag.extend([
+            ir::Instruction::Load {
+                src: ir::Place::Direct(*address),
+            },
+            ir::Instruction::Store {
+                dst: ir::Place::Direct(owned_address),
+                store_mode: ir::StoreMode::Replace,
+            },
+        ]);
+        *frame_offset += 1;
+        *address = owned_address;
     }
 }
 
@@ -603,34 +626,39 @@ fn compile_move<'a>(
     scope: &mut Scope<'a, '_>,
     cur_frag: FragId,
 ) {
-    match scope.size_of(ty) {
+    let size = scope.size_of(ty);
+    let cur_frag = &mut scope.global.frags[cur_frag];
+    match size {
         0 => {}
         1 => match src {
             ir::Value::Immediate(value) => {
-                scope.global.frags[cur_frag].extend([ir::Instruction::StoreImm {
+                cur_frag.extend([ir::Instruction::StoreImm {
                     dst,
                     value,
                     store_mode,
                 }]);
             }
             ir::Value::At(src) => {
-                scope.global.frags[cur_frag].extend([
+                cur_frag.extend([
                     ir::Instruction::Load { src },
                     ir::Instruction::Store { dst, store_mode },
                 ]);
             }
         },
-        size => {
+        2.. => {
             let ir::Value::At(mut src) = src else {
                 unreachable!("Expected source value to be a place in a move of size > 1");
             };
+            let mut after_frame_offset = scope.frame_offset + size;
+            own_place(&mut dst, cur_frag, &mut after_frame_offset);
+            own_place(&mut src, cur_frag, &mut after_frame_offset);
             for _ in 0..size {
-                scope.global.frags[cur_frag].extend([
+                cur_frag.extend([
                     ir::Instruction::Load { src },
                     ir::Instruction::Store { dst, store_mode },
                 ]);
-                dst = increment_place(dst);
-                src = increment_place(src);
+                increment_place(&mut dst, cur_frag);
+                increment_place(&mut src, cur_frag);
             }
         }
     }
@@ -833,9 +861,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                 }
                 _ => {
                     let src = compile_expr(value, scope, &mut cur_frag);
-                    let frame_offset = scope.frame_offset;
                     let dst = compile_place(place, true, scope);
-                    assert!(frame_offset == scope.frame_offset);
                     if src.ty != dst.ty {
                         panic!(
                             "Cannot assign value of type `{}` to place of type `{}`.",
