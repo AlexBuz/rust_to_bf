@@ -7,25 +7,28 @@ fn ident_parser() -> impl Parser<Token, Ident, Error = Simple<Token>> + Clone {
     select! { Token::Ident(ident) => ident }
 }
 
-fn place_parser() -> impl Parser<Token, Place, Error = Simple<Token>> + Clone {
-    let field_ident = ident_parser()
-        .map(FieldIdent::Named)
-        .or(int_parser().map(FieldIdent::Index));
+fn place_parser(
+    atom_parser: impl Parser<Token, Expr, Error = Simple<Token>> + Clone + 'static,
+) -> impl Parser<Token, Place, Error = Simple<Token>> + Clone {
+    recursive(|place_parser| {
+        let field_ident = ident_parser()
+            .map(FieldIdent::Named)
+            .or(int_parser().map(FieldIdent::Index));
 
-    let path = ident_parser()
+        choice((
+            just(Token::Star)
+                .ignore_then(atom_parser)
+                .map(Box::new)
+                .map(Place::Deref),
+            ident_parser().map(Place::Var),
+            place_parser.delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
+        ))
         .then(just(Token::Dot).ignore_then(field_ident).repeated())
-        .map(|(root, trail)| Path { root, trail });
-
-    let deref = just(Token::Star)
-        .ignore_then(path.clone())
-        .map(Place::Deref);
-
-    let place_parser = path.map(Place::Path).or(deref);
-
-    place_parser
-        .clone()
-        .delimited_by(just(Token::OpenParen), just(Token::CloseParen))
-        .or(place_parser)
+        .foldl(|base, field| Place::FieldAccess {
+            base: Box::new(base),
+            field,
+        })
+    })
 }
 
 fn int_parser() -> impl Parser<Token, usize, Error = Simple<Token>> + Clone {
@@ -61,14 +64,15 @@ where
     ))
 }
 
-fn expr_parser(
+fn atom_parser(
+    expr_parser: impl Parser<Token, Expr, Error = Simple<Token>> + Clone + 'static,
     deny_top_level_empty_struct: bool,
 ) -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
-    recursive(move |expr_parser| {
+    recursive(|atom_parser| {
         let ref_expr = just(Token::And)
             .ignore_then(maybe_token(Token::Mut))
             .or_not()
-            .then(place_parser())
+            .then(place_parser(atom_parser.clone()))
             .map(|(r#ref, place)| match r#ref {
                 Some(mutable) => Expr::Ref { mutable, place },
                 None => Expr::Place(place),
@@ -101,12 +105,8 @@ fn expr_parser(
                         fields: fields
                             .into_iter()
                             .map(|(name, value)| Field {
-                                value: value.unwrap_or_else(|| {
-                                    Expr::Place(Place::Path(Path {
-                                        root: name.clone(),
-                                        trail: vec![],
-                                    }))
-                                }),
+                                value: value
+                                    .unwrap_or_else(|| Expr::Place(Place::Var(name.clone()))),
                                 name,
                             })
                             .collect(),
@@ -114,22 +114,28 @@ fn expr_parser(
                 })
         };
 
-        let prec = choice((
+        choice((
             call_expr,
             struct_expr(deny_top_level_empty_struct as usize),
             tuple_parser(expr_parser.clone()).map(Expr::Tuple),
-            place_parser().map(Expr::Place),
+            place_parser(atom_parser).map(Expr::Place),
             int_parser().map(Expr::Int),
             string_parser().map(Expr::String),
             ref_expr,
             (struct_expr(0).or(expr_parser))
                 .delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
-        ));
+        ))
+    })
+}
 
+fn expr_parser(
+    deny_top_level_empty_struct: bool,
+) -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
+    recursive(move |expr_parser| {
         let prec = just(Token::Bang)
             .to("!")
             .repeated()
-            .then(prec)
+            .then(atom_parser(expr_parser, deny_top_level_empty_struct))
             .foldr(|op, expr| {
                 Expr::Call(CallExpr {
                     func: op.to_string(),
@@ -235,7 +241,7 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
             value,
         });
 
-    let primitive_assign = place_parser()
+    let simple_assign = place_parser(expr_parser(false))
         .then(choice([
             just(Token::PlusEq).to(AssignMode::Add),
             just(Token::MinusEq).to(AssignMode::Subtract),
@@ -244,7 +250,7 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
         .then(expr_parser(false))
         .map(|((place, mode), value)| Statement::Assign { place, value, mode });
 
-    let arithmetic_assign = place_parser()
+    let arithmetic_assign = place_parser(expr_parser(false))
         .then(choice([
             just(Token::StarEq).to("*"),
             just(Token::SlashEq).to("/"),
@@ -267,7 +273,7 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
         Or,
     }
 
-    let short_circuit_assign = place_parser()
+    let short_circuit_assign = place_parser(expr_parser(false))
         .then(choice([
             just(Token::AndAndEq).to(ShortCircuitOp::And),
             just(Token::OrOrEq).to(ShortCircuitOp::Or),
@@ -293,7 +299,7 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
             }
         });
 
-    let assign = choice((primitive_assign, arithmetic_assign, short_circuit_assign));
+    let assign = choice((simple_assign, arithmetic_assign, short_circuit_assign));
 
     let r#return = just(Token::Return)
         .ignore_then(expr_parser(false).or_not().map(Option::unwrap_or_default))
@@ -396,17 +402,15 @@ fn type_parser() -> impl Parser<Token, Type, Error = Simple<Token>> + Clone {
     recursive(|type_parser| {
         just(Token::And)
             .ignore_then(maybe_token(Token::Mut))
-            .or_not()
+            .repeated()
             .then(choice((
                 ident_parser().map(Type::Named),
-                tuple_parser(type_parser).map(Type::Tuple),
+                tuple_parser(type_parser.clone()).map(Type::Tuple),
+                type_parser.delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
             )))
-            .map(|(r#ref, ty)| match r#ref {
-                Some(mutable) => Type::Ref {
-                    mutable,
-                    ty: Box::new(ty),
-                },
-                None => ty,
+            .foldr(|mutable, ty| Type::Ref {
+                mutable,
+                ty: Box::new(ty),
             })
     })
 }

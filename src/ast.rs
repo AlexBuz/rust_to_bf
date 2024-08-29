@@ -14,15 +14,10 @@ pub enum FieldIdent {
 }
 
 #[derive(Debug, Clone)]
-pub struct Path {
-    pub root: Ident,
-    pub trail: Vec<FieldIdent>,
-}
-
-#[derive(Debug, Clone)]
 pub enum Place {
-    Path(Path),
-    Deref(Path),
+    Var(Ident),
+    FieldAccess { base: Box<Place>, field: FieldIdent },
+    Deref(Box<Expr>),
 }
 
 #[derive(Debug, Clone)]
