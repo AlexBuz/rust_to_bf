@@ -392,18 +392,71 @@ fn compile_struct_expr<'a>(
 }
 
 fn compile_tuple_expr<'a>(
-    tuple_expr: &'a [ast::Expr],
+    elements: &'a [ast::Expr],
     scope: &mut Scope<'a, '_>,
     cur_frag: &mut FragId,
 ) -> Typed<'a, ir::Value> {
     Typed::new(
         stack_value_at(scope.frame_offset),
         Type::Tuple(
-            tuple_expr
+            elements
                 .iter()
                 .map(|expr| compile_expr_and_push(expr, scope, cur_frag).ty)
                 .collect(),
         ),
+    )
+}
+
+fn compile_array_expr<'a>(
+    array_expr: &'a ast::ArrayExpr,
+    scope: &mut Scope<'a, '_>,
+    cur_frag: &mut FragId,
+) -> Typed<'a, ir::Value> {
+    Typed::new(
+        stack_value_at(scope.frame_offset),
+        match *array_expr {
+            ast::ArrayExpr::List(ref elements) => Type::Array {
+                len: elements.len(),
+                ty: Box::new(match elements.split_first() {
+                    Some((first, rest)) => {
+                        let first_ty = compile_expr_and_push(first, scope, cur_frag).ty;
+                        for element in rest {
+                            if compile_expr_and_push(element, scope, cur_frag).ty != first_ty {
+                                panic!("Array elements must all have the same type.");
+                            }
+                        }
+                        first_ty
+                    }
+                    None => todo!("empty array type inference"),
+                }),
+            },
+            ast::ArrayExpr::Repeat { ref value, len } => {
+                let first_elem = compile_expr_and_push(value, scope, cur_frag);
+                let size = scope.size_of(&first_elem.ty);
+                match len {
+                    0 => scope.frame_offset -= size,
+                    _ => {
+                        for _ in 1..len {
+                            compile_move(
+                                ir::Place::Direct(ir::DirectPlace::StackFrame {
+                                    offset: scope.frame_offset,
+                                }),
+                                ir::Value::At(ir::Place::Direct(first_elem.value)),
+                                ir::StoreMode::Replace,
+                                &first_elem.ty,
+                                scope,
+                                *cur_frag,
+                            );
+                            scope.frame_offset += size;
+                        }
+                    }
+                }
+                Type::Array {
+                    len,
+                    ty: Box::new(first_elem.ty),
+                }
+            }
+        },
     )
 }
 
@@ -428,7 +481,7 @@ fn compile_var_access<'a>(
 
 fn compile_field_access<'a>(
     base: &'a ast::Place,
-    field: &'a ast::FieldIdent,
+    field_name: &'a str,
     mutating: bool,
     scope: &mut Scope<'a, '_>,
     cur_frag: &mut FragId,
@@ -437,41 +490,45 @@ fn compile_field_access<'a>(
     while let Type::Ref { .. } = base.ty {
         base = compile_deref(base, mutating, scope, *cur_frag);
     }
-    let mut ty = &base.ty;
-    let mut offset = 0;
-    match *field {
-        ast::FieldIdent::Index(index) => {
-            let Type::Tuple(tys) = ty else {
-                panic!("Non-tuple type `{ty}` has no field at index `{index}`.");
-            };
-            ty = &tys[index];
-            for ty in &tys[..index] {
-                offset += scope.size_of(ty);
+    let mut found_field = None;
+    match &base.ty {
+        Type::Tuple(tys) => {
+            if let Ok(index) = field_name.parse() {
+                if let Some(ty) = tys.get(index) {
+                    found_field = Some(Typed::new(
+                        tys[..index].iter().map(|ty| scope.size_of(ty)).sum(),
+                        ty.to_owned(),
+                    ));
+                }
             }
         }
-        ast::FieldIdent::Named(ref field_name) => {
-            let Type::Named(ty_name) = ty else {
-                panic!("Non-struct type `{ty}` has no field named `{field_name}`.");
-            };
+        Type::Named(ty_name) => {
             let Some(struct_def) = scope.global.struct_defs.get(ty_name) else {
                 panic!("Type `{ty_name}` not found.");
             };
-            ty = struct_def
+            found_field = struct_def
                 .fields
                 .iter()
-                .find_map(|field| {
-                    if field.name == field_name {
-                        Some(&field.ty)
-                    } else {
-                        offset += scope.size_of(&field.ty);
-                        None
-                    }
-                })
-                .unwrap_or_else(|| panic!("Field `{field_name}` not found in struct `{ty_name}`."));
+                .enumerate()
+                .find_map(|(index, field)| {
+                    (field.name == field_name).then(|| {
+                        Typed::new(
+                            struct_def.fields[..index]
+                                .iter()
+                                .map(|field| scope.size_of(&field.ty))
+                                .sum(),
+                            field.ty.to_owned(),
+                        )
+                    })
+                });
         }
+        _ => {}
     }
+    let Some(Typed { value: offset, ty }) = found_field else {
+        panic!("No field `{}` on type `{}`.", field_name, base.ty);
+    };
     if offset > 0 {
-        let size = scope.size_of(ty);
+        let size = scope.size_of(&ty);
         own_place(
             &mut base.value,
             &mut scope.global.frags[*cur_frag],
@@ -479,7 +536,7 @@ fn compile_field_access<'a>(
         );
     }
     increment_place(&mut base.value, &mut scope.global.frags[*cur_frag], offset);
-    Typed::new(base.value, ty.to_owned())
+    Typed::new(base.value, ty)
 }
 
 fn compile_deref<'a>(
@@ -610,7 +667,8 @@ fn compile_expr<'a>(
         ast::Expr::Ref { mutable, ref place } => compile_ref(mutable, place, scope, cur_frag),
         ast::Expr::Call(ref call_expr) => compile_call(call_expr, scope, cur_frag),
         ast::Expr::Struct(ref struct_expr) => compile_struct_expr(struct_expr, scope, cur_frag),
-        ast::Expr::Tuple(ref tuple_expr) => compile_tuple_expr(tuple_expr, scope, cur_frag),
+        ast::Expr::Tuple(ref elements) => compile_tuple_expr(elements, scope, cur_frag),
+        ast::Expr::Array(ref array_expr) => compile_array_expr(array_expr, scope, cur_frag),
     }
 }
 
@@ -764,6 +822,7 @@ impl<'a> GlobalState<'a> {
         match ty {
             Type::Usize => 1,
             Type::Tuple(tys) => tys.iter().map(|ty| self.size_of(ty)).sum(),
+            Type::Array { ty, len } => self.size_of(ty) * len,
             Type::Named(name) => self
                 .struct_defs
                 .get(name)
@@ -1107,6 +1166,7 @@ static STD: LazyLock<ast::Ast> = LazyLock::new(|| {
 enum Type<'a> {
     Usize,
     Tuple(Vec<Type<'a>>),
+    Array { ty: Box<Type<'a>>, len: usize },
     Named(&'a str),
     Ref { mutable: bool, ty: Box<Type<'a>> },
 }
@@ -1135,6 +1195,7 @@ impl std::fmt::Display for Type<'_> {
                 }
                 write!(f, ")")
             }
+            Type::Array { ref ty, len } => write!(f, "[{}; {}]", ty, len),
             Type::Named(name) => write!(f, "{}", name),
             Type::Ref { mutable, ref ty } => {
                 write!(f, "&")?;
@@ -1151,6 +1212,10 @@ impl<'a> From<&'a ast::Type> for Type<'a> {
     fn from(ty: &'a ast::Type) -> Self {
         match *ty {
             ast::Type::Tuple(ref tys) => Type::Tuple(tys.iter().map(Type::from).collect()),
+            ast::Type::Array { ref ty, len } => Type::Array {
+                ty: Box::new(Type::from(ty.as_ref())),
+                len,
+            },
             ast::Type::Named(ref name) => match &**name {
                 "usize" => Type::Usize,
                 _ => Type::Named(name),

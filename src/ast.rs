@@ -8,15 +8,9 @@ use {
 pub type Ident = String;
 
 #[derive(Debug, Clone)]
-pub enum FieldIdent {
-    Named(Ident),
-    Index(usize),
-}
-
-#[derive(Debug, Clone)]
 pub enum Place {
     Var(Ident),
-    FieldAccess { base: Box<Place>, field: FieldIdent },
+    FieldAccess { base: Box<Place>, field: Ident },
     Deref(Box<Expr>),
 }
 
@@ -41,6 +35,12 @@ pub struct StructExpr {
 }
 
 #[derive(Debug, Clone)]
+pub enum ArrayExpr {
+    List(Vec<Expr>),
+    Repeat { value: Box<Expr>, len: usize },
+}
+
+#[derive(Debug, Clone)]
 pub enum Expr {
     Int(usize),
     String(String),
@@ -49,6 +49,7 @@ pub enum Expr {
     Call(CallExpr),
     Struct(StructExpr),
     Tuple(Vec<Expr>),
+    Array(ArrayExpr),
 }
 
 impl Default for Expr {
@@ -102,6 +103,7 @@ impl From<Statement> for Vec<Statement> {
 #[derive(Debug, Clone)]
 pub enum Type {
     Tuple(Vec<Type>),
+    Array { ty: Box<Type>, len: usize },
     Named(Ident),
     Ref { mutable: bool, ty: Box<Type> },
     // TODO: Add support for function types
@@ -134,6 +136,7 @@ impl std::fmt::Display for Type {
                 }
                 write!(f, ")")
             }
+            Type::Array { ty, len } => write!(f, "[{}; {}]", ty, len),
             Type::Named(name) => write!(f, "{}", name),
             Type::Ref { mutable, ty } => {
                 write!(f, "&")?;

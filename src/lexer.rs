@@ -5,6 +5,8 @@ pub enum Token {
     // delimiters
     OpenBrace,
     CloseBrace,
+    OpenBracket,
+    CloseBracket,
     OpenParen,
     CloseParen,
     Comma,
@@ -56,7 +58,8 @@ pub enum Token {
     Break,
     Continue,
     // literals
-    Int(usize),
+    Int(String),
+    Char(char),
     String(String),
     // identifiers
     Ident(Ident),
@@ -66,6 +69,8 @@ fn delimiter_lexer() -> impl Parser<char, Token, Error = Simple<char>> + Clone {
     choice([
         just('{').to(Token::OpenBrace),
         just('}').to(Token::CloseBrace),
+        just('[').to(Token::OpenBracket),
+        just(']').to(Token::CloseBracket),
         just('(').to(Token::OpenParen),
         just(')').to(Token::CloseParen),
         just(',').to(Token::Comma),
@@ -150,8 +155,7 @@ fn char_literal_lexer() -> impl Parser<char, Token, Error = Simple<char>> + Clon
     just('\'')
         .ignore_then(none_of("'\\").or(char_escape_lexer()))
         .then_ignore(just('\''))
-        .map(|c| c as _)
-        .map(Token::Int)
+        .map(Token::Char)
 }
 
 fn int_literal_lexer() -> impl Parser<char, Token, Error = Simple<char>> + Clone {

@@ -11,10 +11,6 @@ fn place_parser(
     atom_parser: impl Parser<Token, Expr, Error = Simple<Token>> + Clone + 'static,
 ) -> impl Parser<Token, Place, Error = Simple<Token>> + Clone {
     recursive(|place_parser| {
-        let field_ident = ident_parser()
-            .map(FieldIdent::Named)
-            .or(int_parser().map(FieldIdent::Index));
-
         choice((
             just(Token::Star)
                 .ignore_then(atom_parser)
@@ -23,7 +19,11 @@ fn place_parser(
             ident_parser().map(Place::Var),
             place_parser.delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
         ))
-        .then(just(Token::Dot).ignore_then(field_ident).repeated())
+        .then(
+            just(Token::Dot)
+                .ignore_then(ident_parser().or(select! { Token::Int(int) => int }))
+                .repeated(),
+        )
         .foldl(|base, field| Place::FieldAccess {
             base: Box::new(base),
             field,
@@ -32,36 +32,43 @@ fn place_parser(
 }
 
 fn int_parser() -> impl Parser<Token, usize, Error = Simple<Token>> + Clone {
-    select! { Token::Int(int) => int }
+    select! { Token::Int(int) => int }.from_str().unwrapped()
+}
+
+fn int_or_char_parser() -> impl Parser<Token, usize, Error = Simple<Token>> + Clone {
+    int_parser().or(select! { Token::Char(c) => c as usize })
 }
 
 fn string_parser() -> impl Parser<Token, String, Error = Simple<Token>> + Clone {
     select! { Token::String(string) => string }
 }
 
-fn tuple_parser<I, P>(item_parser: P) -> impl Parser<Token, Vec<I>, Error = Simple<Token>> + Clone
-where
-    I: Clone,
-    P: Parser<Token, I, Error = Simple<Token>> + Clone,
-{
+fn tuple_parser<Elem: Clone>(
+    elem_parser: impl Parser<Token, Elem, Error = Simple<Token>> + Clone,
+) -> impl Parser<Token, Vec<Elem>, Error = Simple<Token>> + Clone {
     choice((
-        // Empty tuple
-        just(Token::OpenParen)
-            .ignore_then(just(Token::CloseParen))
-            .to(vec![]),
-        // Single-item tuple
-        just(Token::OpenParen)
-            .ignore_then(item_parser.clone())
-            .then_ignore(just(Token::Comma))
-            .then_ignore(just(Token::CloseParen))
-            .map(|x| vec![x]),
-        // Multi-item tuple
-        item_parser
+        // multiple elements
+        elem_parser
+            .clone()
             .separated_by(just(Token::Comma))
             .at_least(2)
-            .allow_trailing()
-            .delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
+            .allow_trailing(),
+        // single element
+        elem_parser.then_ignore(just(Token::Comma)).map(|x| vec![x]),
+        // empty
+        empty().to(vec![]),
     ))
+    .delimited_by(just(Token::OpenParen), just(Token::CloseParen))
+}
+
+fn repeat_parser<Elem>(
+    elem_parser: impl Parser<Token, Elem, Error = Simple<Token>> + Clone,
+) -> impl Parser<Token, (Box<Elem>, usize), Error = Simple<Token>> + Clone {
+    elem_parser
+        .map(Box::new)
+        .then_ignore(just(Token::Semi))
+        .then(int_parser())
+        .delimited_by(just(Token::OpenBracket), just(Token::CloseBracket))
 }
 
 fn atom_parser(
@@ -114,12 +121,24 @@ fn atom_parser(
                 })
         };
 
+        let array_expr = choice((
+            expr_parser
+                .clone()
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .delimited_by(just(Token::OpenBracket), just(Token::CloseBracket))
+                .map(ArrayExpr::List),
+            repeat_parser(expr_parser.clone()).map(|(value, len)| ArrayExpr::Repeat { value, len }),
+        ))
+        .map(Expr::Array);
+
         choice((
             call_expr,
             struct_expr(deny_top_level_empty_struct as usize),
             tuple_parser(expr_parser.clone()).map(Expr::Tuple),
+            array_expr,
             place_parser(atom_parser).map(Expr::Place),
-            int_parser().map(Expr::Int),
+            int_or_char_parser().map(Expr::Int),
             string_parser().map(Expr::String),
             ref_expr,
             (struct_expr(0).or(expr_parser))
@@ -361,7 +380,7 @@ fn block_parser() -> impl Parser<Token, Vec<Statement>, Error = Simple<Token>> +
             let switch = just(Token::Match)
                 .ignore_then(expr_parser(true))
                 .then(
-                    int_parser()
+                    int_or_char_parser()
                         .then(arm.clone())
                         .repeated()
                         .then(
@@ -406,6 +425,7 @@ fn type_parser() -> impl Parser<Token, Type, Error = Simple<Token>> + Clone {
             .then(choice((
                 ident_parser().map(Type::Named),
                 tuple_parser(type_parser.clone()).map(Type::Tuple),
+                repeat_parser(type_parser.clone()).map(|(ty, len)| Type::Array { ty, len }),
                 type_parser.delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
             )))
             .foldr(|mutable, ty| Type::Ref {
