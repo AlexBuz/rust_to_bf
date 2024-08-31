@@ -534,8 +534,8 @@ fn compile_field_access<'a>(
             &mut scope.global.frags[*cur_frag],
             scope.frame_offset + size,
         );
+        increment_place(&mut base.value, &mut scope.global.frags[*cur_frag], offset);
     }
-    increment_place(&mut base.value, &mut scope.global.frags[*cur_frag], offset);
     Typed::new(base.value, ty)
 }
 
@@ -580,6 +580,49 @@ fn compile_deref<'a>(
     }
 }
 
+fn compile_index<'a>(
+    base: &'a ast::Place,
+    index: &'a ast::Expr,
+    mutating: bool,
+    scope: &mut Scope<'a, '_>,
+    cur_frag: &mut FragId,
+) -> Typed<'a, ir::Place> {
+    let mut base = compile_place(base, mutating, scope, cur_frag);
+    while let Type::Ref { .. } = base.ty {
+        base = compile_deref(base, mutating, scope, *cur_frag);
+    }
+    let Type::Array { ty: elem_ty, .. } = base.ty else {
+        panic!("Cannot index type `{}`", base.ty);
+    };
+    let index = compile_expr(index, scope, cur_frag).expect(&Type::Usize);
+    let elem_size = scope.size_of(&elem_ty);
+    let address = ir::DirectPlace::StackFrame {
+        offset: scope.frame_offset + elem_size,
+    };
+    scope.global.frags[*cur_frag].extend([
+        ir::Instruction::LoadRef { src: base.value },
+        ir::Instruction::Store {
+            dst: ir::Place::Direct(address),
+            store_mode: ir::StoreMode::Replace,
+        },
+    ]);
+    // TODO: turn this into a single move (by adding a multiplier to the store mode/instruction)
+    for _ in 0..elem_size * 2 {
+        compile_move(
+            ir::Place::Direct(address),
+            index,
+            ir::StoreMode::Add,
+            &Type::Usize,
+            scope,
+            *cur_frag,
+        );
+    }
+    Typed::new(
+        ir::Place::Indirect(ir::IndirectPlace::Deref { address }),
+        *elem_ty,
+    )
+}
+
 fn compile_place<'a>(
     place: &'a ast::Place,
     mutating: bool,
@@ -592,6 +635,7 @@ fn compile_place<'a>(
         ast::Place::FieldAccess { base, field } => {
             compile_field_access(base, field, mutating, scope, cur_frag)
         }
+        ast::Place::Index { base, index } => compile_index(base, index, mutating, scope, cur_frag),
         ast::Place::Deref(expr) => compile_deref(
             compile_expr(expr, scope, cur_frag).map(|value| match value {
                 ir::Value::At(place) => place,
@@ -927,6 +971,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
     let start_frag = scope.new_frag();
     let mut cur_frag = start_frag;
     for statement in statements {
+        let prev_frame_offset = scope.frame_offset;
         match *statement {
             ast::Statement::Let {
                 mutable,
@@ -976,7 +1021,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                     scope.global.frags[cur_frag].push(ir::Instruction::Input { dst });
                 }
                 _ => {
-                    let src = compile_expr(value, scope, &mut cur_frag);
+                    let src = compile_expr_and_push(value, scope, &mut cur_frag);
                     let dst = compile_place(place, true, scope, &mut cur_frag);
                     if src.ty != dst.ty {
                         panic!(
@@ -986,12 +1031,13 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                     }
                     compile_move(
                         dst.value,
-                        src.value,
+                        ir::Value::At(ir::Place::Direct(src.value)),
                         compile_store_mode(mode),
                         &src.ty,
                         scope,
                         cur_frag,
                     );
+                    scope.frame_offset = prev_frame_offset;
                 }
             },
             ast::Statement::Loop(ref body) => {
@@ -1093,7 +1139,6 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                 break;
             }
             ast::Statement::Eval(ref expr) => {
-                let prev_frame_offset = scope.frame_offset;
                 let _ = compile_expr(expr, scope, &mut cur_frag);
                 scope.frame_offset = prev_frame_offset;
             }

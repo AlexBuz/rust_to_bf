@@ -10,23 +10,41 @@ fn ident_parser() -> impl Parser<Token, Ident, Error = Simple<Token>> + Clone {
 fn place_parser(
     atom_parser: impl Parser<Token, Expr, Error = Simple<Token>> + Clone + 'static,
 ) -> impl Parser<Token, Place, Error = Simple<Token>> + Clone {
+    enum FieldOrIndex {
+        Field(Ident),
+        Index(Expr),
+    }
+
     recursive(|place_parser| {
         choice((
             just(Token::Star)
-                .ignore_then(atom_parser)
+                .ignore_then(atom_parser.clone())
                 .map(Box::new)
                 .map(Place::Deref),
             ident_parser().map(Place::Var),
             place_parser.delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
         ))
         .then(
-            just(Token::Dot)
-                .ignore_then(ident_parser().or(select! { Token::Int(int) => int }))
-                .repeated(),
+            choice((
+                just(Token::Dot)
+                    .ignore_then(ident_parser().or(select! { Token::Int(int) => int }))
+                    .map(FieldOrIndex::Field),
+                just(Token::OpenBracket)
+                    .ignore_then(atom_parser) // TODO: allow this to be an arbitrary expression
+                    .then_ignore(just(Token::CloseBracket))
+                    .map(FieldOrIndex::Index),
+            ))
+            .repeated(),
         )
-        .foldl(|base, field| Place::FieldAccess {
-            base: Box::new(base),
-            field,
+        .foldl(|base, field_or_index| match field_or_index {
+            FieldOrIndex::Field(field) => Place::FieldAccess {
+                base: Box::new(base),
+                field,
+            },
+            FieldOrIndex::Index(index) => Place::Index {
+                base: Box::new(base),
+                index: Box::new(index),
+            },
         })
     })
 }

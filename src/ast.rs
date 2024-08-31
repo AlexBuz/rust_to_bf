@@ -11,6 +11,7 @@ pub type Ident = String;
 pub enum Place {
     Var(Ident),
     FieldAccess { base: Box<Place>, field: Ident },
+    Index { base: Box<Place>, index: Box<Expr> },
     Deref(Box<Expr>),
 }
 
