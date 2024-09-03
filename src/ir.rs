@@ -35,15 +35,16 @@ impl IndirectPlace {
         match self {
             IndirectPlace::Deref { address } => {
                 let value = *address.resolve(state);
-                let index = value / 2;
-                if value % 2 == 0 {
-                    &mut state.stack[index]
+                let vector = if value % 2 == 0 {
+                    &mut state.heap
                 } else {
-                    if index >= state.heap.len() {
-                        state.heap.resize(index + 1, 0);
-                    }
-                    &mut state.heap[index]
+                    &mut state.stack
+                };
+                let index = value / 2;
+                if index >= vector.len() {
+                    vector.resize(index + 1, 0);
                 }
+                &mut vector[index]
             }
         }
     }
@@ -65,7 +66,9 @@ impl Place {
 
     fn resolve_ref(&self, state: &mut MemoryState) -> usize {
         match self {
-            Place::Direct(DirectPlace::StackFrame { offset }) => 2 * (state.frame_base + offset),
+            Place::Direct(DirectPlace::StackFrame { offset }) => {
+                2 * (state.frame_base + offset) + 1
+            }
             Place::Indirect(IndirectPlace::Deref { address }) => *address.resolve(state),
         }
     }
