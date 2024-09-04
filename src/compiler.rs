@@ -646,7 +646,9 @@ fn compile_place<'a>(
         ast::Place::Deref(expr) => compile_deref(
             compile_expr(expr, scope, cur_frag).map(|value| match value {
                 ir::Value::At(place) => place,
-                ir::Value::Immediate(_) => panic!("cannot dereference immediate value"),
+                ir::Value::Immediate(address) => {
+                    ir::Place::Direct(ir::DirectPlace::Address(address))
+                }
             }),
             mutating,
             scope,
@@ -765,6 +767,7 @@ fn increment_place(place: &mut ir::Place, cur_frag: &mut Vec<ir::Instruction>, a
         ir::Place::Direct(ir::DirectPlace::StackFrame { offset }) => {
             *offset += amount;
         }
+        ir::Place::Direct(ir::DirectPlace::Address(address)) => *address += 2 * amount,
         ir::Place::Indirect(ir::IndirectPlace::Deref { address }) => {
             cur_frag.push(ir::Instruction::StoreImm {
                 dst: ir::Place::Direct(*address),
@@ -1089,8 +1092,8 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                 break;
             }
             ast::Statement::Match { ref cond, ref arms } => {
-                let mut arm_map = BTreeMap::new();
-                let mut default_body: &[ast::Statement] = &[];
+                let mut ordered_arms = BTreeMap::new();
+                let mut default_body = None;
                 let mut pat_ty = None;
 
                 for (pat, body) in arms {
@@ -1099,7 +1102,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                         ast::Pattern::Int(value) => (Type::Usize, value),
                         ast::Pattern::Bool(value) => (Type::Bool, value as usize),
                         ast::Pattern::Wildcard => {
-                            default_body = body;
+                            default_body = Some(body);
                             break;
                         }
                     };
@@ -1113,10 +1116,12 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                     } else {
                         pat_ty = Some(ty);
                     }
-                    arm_map.entry(value).or_insert(body);
+                    ordered_arms.entry(value).or_insert(body);
                 }
 
-                let Some(&last_arm) = arm_map.keys().last() else {
+                let default_body = default_body.unwrap_or_default();
+
+                let Some(&last_arm) = ordered_arms.keys().last() else {
                     execute_block(default_body, scope, &mut cur_frag);
                     continue;
                 };
@@ -1128,7 +1133,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                         let arm_blocks = (0..=last_arm)
                             .map(|value| {
                                 compile_block(
-                                    arm_map.get(&value).copied().unwrap_or(default_body),
+                                    ordered_arms.get(&value).copied().unwrap_or(default_body),
                                     scope,
                                 )
                             })
@@ -1149,7 +1154,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                         }
                     }
                     ir::Value::Immediate(value) => execute_block(
-                        arm_map.get(&value).copied().unwrap_or(default_body),
+                        ordered_arms.get(&value).copied().unwrap_or(default_body),
                         scope,
                         &mut cur_frag,
                     ),

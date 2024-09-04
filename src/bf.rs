@@ -39,6 +39,11 @@ impl DirectPlace {
                 let place_to_sb = format!("{}6<[8<]", "8<".repeat(offset));
                 (sb_to_place, Cow::Owned(place_to_sb))
             }
+            Address(address) => {
+                let sb_to_place = ">>".repeat(2 * address + 1);
+                let place_to_sb = "<<".repeat(2 * address + 1);
+                (sb_to_place, Cow::Owned(place_to_sb))
+            }
         }
     }
 
@@ -208,6 +213,11 @@ impl Place {
                     output.push_str(&"++".repeat(offset));
 
                     // go back to the stack base
+                    output.push_str(">>");
+                }
+                Address(address) => {
+                    output.push_str("<<");
+                    output.push_str(&"+".repeat(address));
                     output.push_str(">>");
                 }
             },

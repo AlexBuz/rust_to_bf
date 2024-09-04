@@ -8,6 +8,8 @@ use {
 pub enum DirectPlace {
     #[display("stack_frame[{}]", offset)]
     StackFrame { offset: usize },
+    #[display("*{_0}")]
+    Address(usize),
 }
 
 impl DirectPlace {
@@ -20,6 +22,25 @@ impl DirectPlace {
                 }
                 &mut state.stack[index]
             }
+            DirectPlace::Address(address) => {
+                let vector = if address % 2 == 0 {
+                    &mut state.heap
+                } else {
+                    &mut state.stack
+                };
+                let index = address / 2;
+                if index >= vector.len() {
+                    vector.resize(index + 1, 0);
+                }
+                &mut vector[index]
+            }
+        }
+    }
+
+    fn resolve_ref(&self, state: &mut MemoryState) -> usize {
+        match *self {
+            DirectPlace::StackFrame { offset } => 2 * (state.frame_base + offset) + 1,
+            DirectPlace::Address(address) => address,
         }
     }
 }
@@ -34,18 +55,14 @@ impl IndirectPlace {
     fn resolve<'a>(&self, state: &'a mut MemoryState) -> &'a mut usize {
         match self {
             IndirectPlace::Deref { address } => {
-                let value = *address.resolve(state);
-                let vector = if value % 2 == 0 {
-                    &mut state.heap
-                } else {
-                    &mut state.stack
-                };
-                let index = value / 2;
-                if index >= vector.len() {
-                    vector.resize(index + 1, 0);
-                }
-                &mut vector[index]
+                DirectPlace::Address(*address.resolve(state)).resolve(state)
             }
+        }
+    }
+
+    fn resolve_ref(&self, state: &mut MemoryState) -> usize {
+        match self {
+            IndirectPlace::Deref { address } => *address.resolve(state),
         }
     }
 }
@@ -66,10 +83,8 @@ impl Place {
 
     fn resolve_ref(&self, state: &mut MemoryState) -> usize {
         match self {
-            Place::Direct(DirectPlace::StackFrame { offset }) => {
-                2 * (state.frame_base + offset) + 1
-            }
-            Place::Indirect(IndirectPlace::Deref { address }) => *address.resolve(state),
+            Place::Direct(place) => place.resolve_ref(state),
+            Place::Indirect(place) => place.resolve_ref(state),
         }
     }
 }
