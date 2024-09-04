@@ -65,7 +65,7 @@ fn main() -> anyhow::Result<()> {
         ExecuteMode::None => return Ok(()),
     };
     if args.print_final_memory {
-        println!("Final memory state:\n{final_state}");
+        println!("final memory state:\n{final_state}");
     }
     Ok(())
 }

@@ -184,9 +184,9 @@ pub struct Ast {
 
 #[derive(Debug, Clone, From, Display)]
 pub enum ParseOrLexError {
-    #[display("Lex error: {_0:#?}")]
+    #[display("lex error: {_0:#?}")]
     LexError(Vec<Simple<char>>),
-    #[display("Parse error: {_0:#?}")]
+    #[display("parse error: {_0:#?}")]
     ParseError(Vec<Simple<lexer::Token>>),
 }
 

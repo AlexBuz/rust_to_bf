@@ -32,9 +32,16 @@ impl<'a, T> Typed<'a, T> {
 
     fn expect(self, expected_ty: &Type<'a>) -> T {
         if &self.ty != expected_ty {
-            panic!("Expected type `{expected_ty}` but got `{}`.", self.ty);
+            panic!("expected `{expected_ty}`, found `{}`", self.ty);
         }
         self.value
+    }
+
+    fn expect_ref(self, expected_ty: &Type<'a>) -> T {
+        match self.ty {
+            Type::Ref { ty, .. } if *ty == *expected_ty => self.value,
+            _ => panic!("expected `&{expected_ty}`, found `{}`", self.ty),
+        }
     }
 }
 
@@ -126,7 +133,7 @@ fn compile_intrinsic_call<'a>(
                             .push(set_imm(scope.frame_offset, return_frag));
                         scope.frame_offset += 1;
 
-                        compile_expr_and_push(arg, scope, cur_frag).expect(&Type::Usize);
+                        compile_expr_and_push(arg, scope, cur_frag).expect_ref(&Type::Str);
 
                         scope.global.frags[*cur_frag].extend([ir::Instruction::SaveFrame {
                             size: scope.frame_offset - 1,
@@ -154,13 +161,13 @@ fn compile_intrinsic_call<'a>(
             };
             let format_string = match first_arg {
                 ast::Expr::String(s) => s,
-                _ => panic!("First argument to `{name}` must be a string literal"),
+                _ => panic!("first argument to `{name}` must be a string literal"),
             };
             let mut format_chars = format_string.bytes();
             while let Some(c) = format_chars.next() {
                 if c == b'%' {
                     let Some(format_specifier) = format_chars.next() else {
-                        panic!("Unterminated format specifier");
+                        panic!("unterminated format specifier");
                     };
                     if format_specifier == b'%' {
                         scope.global.frags[*cur_frag].push(ir::Instruction::Output {
@@ -169,14 +176,14 @@ fn compile_intrinsic_call<'a>(
                         continue;
                     }
                     let Some((arg, rest)) = args.split_at_checked(1) else {
-                        panic!("Not enough arguments for format string `{format_string}`")
+                        panic!("not enough arguments for format string `{format_string}`")
                     };
                     args = rest;
                     match format_specifier {
                         b'c' => compile_intrinsic_call("print_char", arg, scope, cur_frag),
                         b's' => compile_intrinsic_call("print", arg, scope, cur_frag),
                         b'd' => compile_func_call("print_int", arg, scope, cur_frag),
-                        _ => panic!("Invalid format specifier"),
+                        _ => panic!("invalid format specifier"),
                     }
                     .expect(&Type::unit());
                 } else {
@@ -187,7 +194,7 @@ fn compile_intrinsic_call<'a>(
             }
             scope.frame_offset = orig_frame_offset;
             if !args.is_empty() {
-                panic!("Too many arguments for format string `{format_string}`");
+                panic!("too many arguments for format string `{format_string}`");
             }
             Typed::new(stack_value_at(orig_frame_offset), Type::unit())
         }
@@ -213,7 +220,7 @@ fn compile_intrinsic_call<'a>(
             let [false_circuit, true_circuit] = match name {
                 "&&" => [short_circuit, long_circuit],
                 "||" => [long_circuit, short_circuit],
-                _ => unreachable!("The only short-circuiting operators are `&&` and `||`"),
+                _ => unreachable!("the only short-circuiting operators are `&&` and `||`"),
             };
 
             scope.global.frags[*cur_frag].extend([ir::Instruction::Switch {
@@ -233,9 +240,9 @@ fn compile_intrinsic_call<'a>(
         }
         _ => {
             if scope.global.func_defs.contains_key(name) {
-                panic!("Function `{name}` must be called without `!`");
+                panic!("function `{name}` must be called without `!`");
             } else {
-                panic!("Intrinsic `{name}` does not exist");
+                panic!("intrinsic `{name}` does not exist");
             }
         }
     }
@@ -252,7 +259,7 @@ fn compile_func_call<'a>(
     let func_def = &scope.global.func_defs[name];
     if args.len() != func_def.params.len() {
         panic!(
-            "Function `{name}` expects {} arguments, but {} were provided.",
+            "function `{name}` expects {} arguments, but {} were provided",
             func_def.params.len(),
             args.len()
         );
@@ -317,12 +324,12 @@ fn compile_struct_expr<'a>(
     cur_frag: &mut FragId,
 ) -> Typed<'a, ir::Value> {
     let Some(struct_def) = scope.global.struct_defs.get(&*struct_expr.name) else {
-        panic!("Type `{}` not found.", struct_expr.name);
+        panic!("type `{}` not found", struct_expr.name);
     };
 
     if struct_expr.fields.len() != struct_def.fields.len() {
         panic!(
-            "Struct `{}` has {} fields, but {} were provided.",
+            "struct `{}` has {} fields, but {} were provided",
             struct_expr.name,
             struct_def.fields.len(),
             struct_expr.fields.len()
@@ -355,12 +362,12 @@ fn compile_struct_expr<'a>(
     for field in &struct_expr.fields {
         let Some(expected_field) = expected_fields.get_mut(&*field.name).map(Option::take) else {
             panic!(
-                "Field `{}` not found in struct `{}`.",
+                "field `{}` not found in struct `{}`",
                 field.name, struct_expr.name
             );
         };
         let Some(field_info) = expected_field else {
-            panic!("Field `{}` specified more than once.", field.name);
+            panic!("field `{}` specified more than once", field.name);
         };
         match scope.frame_offset.cmp(&field_info.frame_offset) {
             Less | Equal => {
@@ -422,7 +429,7 @@ fn compile_array_expr<'a>(
                         let first_ty = compile_expr_and_push(first, scope, cur_frag).ty;
                         for element in rest {
                             if compile_expr_and_push(element, scope, cur_frag).ty != first_ty {
-                                panic!("Array elements must all have the same type.");
+                                panic!("array elements must all have the same type");
                             }
                         }
                         first_ty
@@ -466,10 +473,10 @@ fn compile_var_access<'a>(
     scope: &Scope<'a, '_>,
 ) -> Typed<'a, ir::Place> {
     let Some(var) = scope.vars.iter().rev().find(|var| var.name == name) else {
-        panic!("Variable `{name}` not found.");
+        panic!("variable `{name}` not found");
     };
     if mutating && !var.mutable {
-        panic!("Variable `{name}` is not mutable.");
+        panic!("variable `{name}` is not mutable");
     }
     Typed::new(
         ir::Place::Direct(ir::DirectPlace::StackFrame {
@@ -504,7 +511,7 @@ fn compile_field_access<'a>(
         }
         Type::Named(ty_name) => {
             let Some(struct_def) = scope.global.struct_defs.get(ty_name) else {
-                panic!("Type `{ty_name}` not found.");
+                panic!("type `{ty_name}` not found");
             };
             found_field = struct_def
                 .fields
@@ -525,7 +532,7 @@ fn compile_field_access<'a>(
         _ => {}
     }
     let Some(Typed { value: offset, ty }) = found_field else {
-        panic!("No field `{}` on type `{}`.", field_name, base.ty);
+        panic!("no field `{}` on type `{}`", field_name, base.ty);
     };
     if offset > 0 {
         let size = scope.size_of(&ty);
@@ -551,7 +558,7 @@ fn compile_deref<'a>(
             value,
         } => {
             if mutating && !mutable {
-                panic!("Cannot mutate immutable reference");
+                panic!("cannot mutate value of type `{ty}` through an immutable reference");
             }
             Typed::new(
                 match value {
@@ -576,7 +583,7 @@ fn compile_deref<'a>(
                 *ty,
             )
         }
-        Typed { ty, .. } => panic!("Cannot dereference value of type `{ty}`"),
+        Typed { ty, .. } => panic!("cannot dereference value of type `{ty}`"),
     }
 }
 
@@ -592,7 +599,7 @@ fn compile_index<'a>(
         base = compile_deref(base, mutating, scope, *cur_frag);
     }
     let Type::Array { ty: elem_ty, .. } = base.ty else {
-        panic!("Cannot index type `{}`", base.ty);
+        panic!("cannot index into value of type `{}`", base.ty);
     };
     let index = compile_expr(index, scope, cur_frag).expect(&Type::Usize);
     let elem_size = scope.size_of(&elem_ty);
@@ -639,7 +646,7 @@ fn compile_place<'a>(
         ast::Place::Deref(expr) => compile_deref(
             compile_expr(expr, scope, cur_frag).map(|value| match value {
                 ir::Value::At(place) => place,
-                ir::Value::Immediate(i) => panic!("Cannot dereference integer `{i}`"),
+                ir::Value::Immediate(_) => panic!("cannot dereference immediate value"),
             }),
             mutating,
             scope,
@@ -693,7 +700,10 @@ fn compile_string<'a>(s: &'a str, scope: &mut Scope<'a, '_>) -> Typed<'a, ir::Va
             );
             scope.global.frags.len() - 1
         })),
-        Type::Usize,
+        Type::Ref {
+            mutable: false,
+            ty: Box::new(Type::Str),
+        },
     )
 }
 
@@ -807,7 +817,7 @@ fn compile_move<'a>(
         },
         2.. => {
             let ir::Value::At(mut src) = src else {
-                unreachable!("Expected source value to be a place in a move of size > 1");
+                unreachable!("expected source value to be a place in a move of size > 1");
             };
             own_place(&mut dst, cur_frag, scope.frame_offset + size);
             own_place(&mut src, cur_frag, scope.frame_offset + size + 1);
@@ -865,12 +875,13 @@ impl<'a> GlobalState<'a> {
     fn size_of(&self, ty: &Type) -> usize {
         match ty {
             Type::Usize => 1,
+            Type::Str => panic!("cannot get size of unsized type `str`"),
             Type::Tuple(tys) => tys.iter().map(|ty| self.size_of(ty)).sum(),
             Type::Array { ty, len } => self.size_of(ty) * len,
             Type::Named(name) => self
                 .struct_defs
                 .get(name)
-                .unwrap_or_else(|| panic!("Type `{name}` not found."))
+                .unwrap_or_else(|| panic!("type `{name}` not found"))
                 .fields
                 .iter()
                 .map(|field| self.size_of(&field.ty))
@@ -932,7 +943,7 @@ impl<'a, 'b> Scope<'a, 'b> {
                 self.frame_offset = target_frame_offset;
             }
             Equal => {}
-            Greater => unreachable!("Cannot shrink_frame to a larger size"),
+            Greater => unreachable!("cannot shrink frame to a larger size"),
         }
     }
 
@@ -984,14 +995,16 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                     mutable,
                     name,
                     ty: match (ty.as_ref().map(Type::from), value) {
-                        (None, None) => panic!("Variable `{name}` must have a type or a value."),
+                        (None, None) => {
+                            panic!("variable `{name}` needs a type annotation or a value")
+                        }
                         (Some(ty), Some(value)) => {
                             compile_expr_and_push(value, scope, &mut cur_frag).expect(&ty);
                             ty
                         }
                         (Some(ty), None) => {
                             if !mutable {
-                                panic!("Variable `{name}` must have a value if it is not mutable.");
+                                panic!("variable `{name}` must be mutable to be uninitialized")
                             }
                             scope.frame_offset += scope.size_of(&ty);
                             ty
@@ -1024,10 +1037,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                     let src = compile_expr_and_push(value, scope, &mut cur_frag);
                     let dst = compile_place(place, true, scope, &mut cur_frag);
                     if src.ty != dst.ty {
-                        panic!(
-                            "Cannot assign value of type `{}` to place of type `{}`.",
-                            src.ty, dst.ty
-                        );
+                        panic!("expected `{}`, found `{}`", dst.ty, src.ty);
                     }
                     compile_move(
                         dst.value,
@@ -1083,7 +1093,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                     .collect::<BTreeMap<_, _>>();
 
                 if case_map.len() != cases.len() {
-                    panic!("Duplicate case values");
+                    panic!("duplicate case values");
                 }
 
                 let Some(&last_case) = case_map.keys().last() else {
@@ -1159,9 +1169,9 @@ fn compile_func<'a>(name: &'a str, global_state: &mut GlobalState<'a>) -> FragId
 
     let func_def = global_state.func_defs.get(name).unwrap_or_else(|| {
         if INTRINSICS.contains(&name) {
-            panic!("Intrinsic `{name}` must be called with `!`");
+            panic!("intrinsic `{name}` must be called with `!`");
         } else {
-            panic!("Function `{name}` not defined");
+            panic!("function `{name}` not defined");
         }
     });
 
@@ -1180,7 +1190,7 @@ fn compile_func<'a>(name: &'a str, global_state: &mut GlobalState<'a>) -> FragId
 
 static STD: LazyLock<ast::Ast> = LazyLock::new(|| {
     let src = include_str!("std.bs");
-    let mut ast = ast::Ast::parse(src).expect("Failed to parse standard library");
+    let mut ast = ast::Ast::parse(src).expect("failed to parse standard library");
     for item in &mut ast.items {
         let ast::Item::FuncDef { name, .. } = item else {
             continue;
@@ -1210,6 +1220,7 @@ static STD: LazyLock<ast::Ast> = LazyLock::new(|| {
 #[must_use]
 enum Type<'a> {
     Usize,
+    Str,
     Tuple(Vec<Type<'a>>),
     Array { ty: Box<Type<'a>>, len: usize },
     Named(&'a str),
@@ -1226,6 +1237,7 @@ impl std::fmt::Display for Type<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
             Type::Usize => write!(f, "usize"),
+            Type::Str => write!(f, "str"),
             Type::Tuple(ref tys) => {
                 write!(f, "(")?;
                 if let Some((first, rest)) = tys.split_first() {
@@ -1253,6 +1265,9 @@ impl std::fmt::Display for Type<'_> {
     }
 }
 
+static PRIMITIVE_TYPES: LazyLock<BTreeMap<&str, Type<'static>>> =
+    LazyLock::new(|| [("usize", Type::Usize), ("str", Type::Str)].into());
+
 impl<'a> From<&'a ast::Type> for Type<'a> {
     fn from(ty: &'a ast::Type) -> Self {
         match *ty {
@@ -1261,9 +1276,9 @@ impl<'a> From<&'a ast::Type> for Type<'a> {
                 ty: Box::new(Type::from(ty.as_ref())),
                 len,
             },
-            ast::Type::Named(ref name) => match &**name {
-                "usize" => Type::Usize,
-                _ => Type::Named(name),
+            ast::Type::Named(ref name) => match PRIMITIVE_TYPES.get(&**name) {
+                Some(ty) => ty.clone(),
+                None => Type::Named(name),
             },
             ast::Type::Ref { mutable, ref ty } => Type::Ref {
                 mutable,
@@ -1280,7 +1295,6 @@ struct Param<'a> {
 }
 
 struct FuncDef<'a> {
-    // name: &'a str,
     params: Vec<Param<'a>>,
     ret_ty: Type<'a>,
     body: Vec<ast::Statement>,
@@ -1292,7 +1306,6 @@ struct Field<'a> {
 }
 
 struct StructDef<'a> {
-    // name: &'a str,
     fields: Vec<Field<'a>>,
 }
 
@@ -1321,10 +1334,16 @@ pub fn compile(ast: &ast::Ast) -> ir::Program {
                     body: body.clone(),
                 };
                 if func_defs.insert(name, func_def).is_some() {
-                    panic!("Function `{name}` already defined.");
+                    panic!("function `{name}` already defined");
                 }
             }
             ast::Item::StructDef { name, fields } => {
+                if PRIMITIVE_TYPES.contains_key(&**name) {
+                    panic!("`{name}` is a primitive type and cannot be redefined");
+                }
+                if struct_defs.contains_key(&**name) {
+                    panic!("`{name}` is defined multiple times");
+                }
                 let struct_def = StructDef {
                     fields: fields
                         .iter()
@@ -1334,9 +1353,7 @@ pub fn compile(ast: &ast::Ast) -> ir::Program {
                         })
                         .collect(),
                 };
-                if struct_defs.insert(name, struct_def).is_some() {
-                    panic!("Type `{name}` already defined.");
-                }
+                struct_defs.insert(name, struct_def);
             }
         }
     }
