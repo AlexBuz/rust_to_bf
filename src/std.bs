@@ -10,9 +10,14 @@ fn sub(mut a: usize, b: usize) -> usize {
 
 fn mul(mut a: usize, b: usize) -> usize {
     let mut result = 0;
-    while a {
-        a -= 1;
-        result += b;
+    loop {
+        match a {
+            0 => break,
+            _ => {
+                a -= 1;
+                result += b;
+            }
+        }
     }
     return result;
 }
@@ -20,22 +25,28 @@ fn mul(mut a: usize, b: usize) -> usize {
 fn div(mut dividend: usize, divisor: usize) -> usize {
     let mut remainder = divisor;
     let mut quotient = 0;
-    while dividend {
-        dividend -= 1;
-        match remainder {
-            0 => {
-                remainder = divisor;
-                quotient += 1;
+    loop {
+        match dividend {
+            0 => break,
+            _ => {
+                dividend -= 1;
+                match remainder {
+                    0 => {
+                        remainder = divisor;
+                        quotient += 1;
+                    }
+                    _ => remainder -= 1,
+                }
             }
         }
-        remainder -= 1;
     }
-    if remainder {
-        let temp = remainder;
-        remainder = divisor;
-        remainder -= temp;
-    } else {
-        quotient += 1;
+    match remainder {
+        0 => quotient += 1,
+        _ => {
+            let temp = remainder;
+            remainder = divisor;
+            remainder -= temp;
+        }
     }
     return quotient;
 }
@@ -43,97 +54,117 @@ fn div(mut dividend: usize, divisor: usize) -> usize {
 fn rem(mut dividend: usize, divisor: usize) -> usize {
     let mut remainder = divisor;
     let mut quotient = 0;
-    while dividend {
-        dividend -= 1;
-        match remainder {
-            0 => {
-                remainder = divisor;
-                quotient += 1;
+    loop {
+        match dividend {
+            0 => break,
+            _ => {
+                dividend -= 1;
+                match remainder {
+                    0 => {
+                        remainder = divisor;
+                        quotient += 1;
+                    }
+                    _ => remainder -= 1,
+                }
             }
         }
-        remainder -= 1;
     }
-    if remainder {
-        let temp = remainder;
-        remainder = divisor;
-        remainder -= temp;
-    } else {
-        quotient += 1;
+    match remainder {
+        0 => quotient += 1,
+        _ => {
+            let temp = remainder;
+            remainder = divisor;
+            remainder -= temp;
+        }
     }
     return remainder;
 }
 
-fn eq(mut a: usize, b: usize) -> usize {
+fn eq(mut a: usize, b: usize) -> bool {
     a -= b;
-    if a {
-        return 0;
-    } else {
-        return 1;
+    match a {
+        0 => return true,
+        _ => return false,
     }
 }
 
-fn ne(mut a: usize, b: usize) -> usize {
+fn ne(mut a: usize, b: usize) -> bool {
     a -= b;
+    match a {
+        0 => return false,
+        _ => return true,
+    }
+}
+
+fn lt(mut a: usize, mut b: usize) -> bool {
+    loop {
+        match b {
+            0 => break,
+            _ => {
+                b -= 1;
+                match a {
+                    0 => return true,
+                    _ => a -= 1,
+                }
+            }
+        }
+    }
+    return false;
+}
+
+fn le(mut a: usize, mut b: usize) -> bool {
+    loop {
+        match a {
+            0 => break,
+            _ => {
+                a -= 1;
+                match b {
+                    0 => return false,
+                    _ => b -= 1,
+                }
+            }
+        }
+    }
+    return true;
+}
+
+fn gt(mut a: usize, mut b: usize) -> bool {
+    loop {
+        match a {
+            0 => break,
+            _ => {
+                a -= 1;
+                match b {
+                    0 => return true,
+                    _ => b -= 1,
+                }
+            }
+        }
+    }
+    return false;
+}
+
+fn ge(mut a: usize, mut b: usize) -> bool {
+    loop {
+        match b {
+            0 => break,
+            _ => {
+                b -= 1;
+                match a {
+                    0 => return false,
+                    _ => a -= 1,
+                }
+            }
+        }
+    }
+    return true;
+}
+
+fn not(a: bool) -> bool {
     if a {
-        return 1;
+        return false;
     } else {
-        return 0;
-    }
-}
-
-fn lt(mut a: usize, mut b: usize) -> usize {
-    while b {
-        b -= 1;
-        if a {
-            a -= 1;
-        } else {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-fn le(mut a: usize, mut b: usize) -> usize {
-    while a {
-        a -= 1;
-        if b {
-            b -= 1;
-        } else {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-fn gt(mut a: usize, mut b: usize) -> usize {
-    while a {
-        a -= 1;
-        if b {
-            b -= 1;
-        } else {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-fn ge(mut a: usize, mut b: usize) -> usize {
-    while b {
-        b -= 1;
-        if a {
-            a -= 1;
-        } else {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-fn not(a: usize) -> usize {
-    if a {
-        return 0;
-    } else {
-        return 1;
+        return true;
     }
 }
 
@@ -141,25 +172,32 @@ fn print_int(mut num: usize) {
     let divisor = 10;
     let mut remainder = divisor;
     let mut quotient = 0;
-    while num {
-        num -= 1;
-        match remainder {
-            0 => {
-                remainder = divisor;
-                quotient += 1;
+    loop {
+        match num {
+            0 => break,
+            _ => {
+                num -= 1;
+                match remainder {
+                    0 => {
+                        remainder = divisor;
+                        quotient += 1;
+                    }
+                    _ => remainder -= 1,
+                }
             }
         }
-        remainder -= 1;
     }
-    if remainder {
-        let temp = remainder;
-        remainder = divisor;
-        remainder -= temp;
-    } else {
-        quotient += 1;
+    match remainder {
+        0 => quotient += 1,
+        _ => {
+            let temp = remainder;
+            remainder = divisor;
+            remainder -= temp;
+        }
     }
-    if quotient {
-        print_int(quotient);
+    match quotient {
+        0 => {},
+        _ => print_int(quotient),
     }
     remainder += 48;
     print_char!(remainder);

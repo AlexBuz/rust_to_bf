@@ -57,6 +57,10 @@ fn int_or_char_parser() -> impl Parser<Token, usize, Error = Simple<Token>> + Cl
     int_parser().or(select! { Token::Char(c) => c as usize })
 }
 
+fn bool_parser() -> impl Parser<Token, bool, Error = Simple<Token>> + Clone {
+    select! { Token::True => true, Token::False => false }
+}
+
 fn string_parser() -> impl Parser<Token, String, Error = Simple<Token>> + Clone {
     select! { Token::String(string) => string }
 }
@@ -157,6 +161,7 @@ fn atom_parser(
             array_expr,
             place_parser(atom_parser).map(Expr::Place),
             int_or_char_parser().map(Expr::Int),
+            bool_parser().map(Expr::Bool),
             string_parser().map(Expr::String),
             ref_expr,
             (struct_expr(0).or(expr_parser))
@@ -264,6 +269,14 @@ fn maybe_token(token: Token) -> impl Parser<Token, bool, Error = Simple<Token>> 
     just(token).or_not().map(|m| m.is_some())
 }
 
+fn pattern_parser() -> impl Parser<Token, Pattern, Error = Simple<Token>> + Clone {
+    choice((
+        int_or_char_parser().map(Pattern::Int),
+        bool_parser().map(Pattern::Bool),
+        just(Token::Underscore).to(Pattern::Wildcard),
+    ))
+}
+
 fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Simple<Token>> + Clone
 {
     let r#let = just(Token::Let)
@@ -325,14 +338,16 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
                     mode: AssignMode::Replace,
                 }],
             ];
-            let [false_case, true_case] = match op {
+            let [false_arm, true_arm] = match op {
                 ShortCircuitOp::And => [short_circuit, long_circuit],
                 ShortCircuitOp::Or => [long_circuit, short_circuit],
             };
-            Statement::Switch {
+            Statement::Match {
                 cond: Expr::Place(place),
-                cases: vec![(0, false_case)],
-                default: true_case,
+                arms: vec![
+                    (Pattern::Bool(false), false_arm),
+                    (Pattern::Wildcard, true_arm),
+                ],
             }
         });
 
@@ -365,10 +380,12 @@ fn block_parser() -> impl Parser<Token, Vec<Statement>, Error = Simple<Token>> +
                         )))
                         .or_not(),
                 )
-                .map(|((cond, main_body), else_body)| Statement::Switch {
+                .map(|((cond, main_body), else_body)| Statement::Match {
                     cond,
-                    cases: vec![(0, else_body.unwrap_or_default())],
-                    default: main_body,
+                    arms: vec![
+                        (Pattern::Bool(false), else_body.unwrap_or_default()),
+                        (Pattern::Wildcard, main_body),
+                    ],
                 })
         });
 
@@ -380,46 +397,39 @@ fn block_parser() -> impl Parser<Token, Vec<Statement>, Error = Simple<Token>> +
             .ignore_then(expr_parser(true))
             .then(block_parser.clone())
             .map(|(cond, body)| {
-                Statement::Loop(vec![Statement::Switch {
+                Statement::Loop(vec![Statement::Match {
                     cond,
-                    cases: vec![(0, vec![Statement::Break])],
-                    default: body,
+                    arms: vec![
+                        (Pattern::Bool(false), vec![Statement::Break]),
+                        (Pattern::Wildcard, body),
+                    ],
                 }])
             });
 
         let statement_with_block = recursive(move |statement_with_block| {
-            let arm = just(Token::FatArrow).ignore_then(
-                statement_without_block_parser()
-                    .then_ignore(just(Token::Comma))
-                    .or(statement_with_block.then_ignore(just(Token::Comma).or_not()))
-                    .map(Vec::from),
-            );
-
-            let switch = just(Token::Match)
+            let r#match = just(Token::Match)
                 .ignore_then(expr_parser(true))
                 .then(
-                    int_or_char_parser()
-                        .then(arm.clone())
-                        .repeated()
+                    pattern_parser()
                         .then(
-                            select! { Token::Ident(ident) if ident == "_" => ident }
-                                .ignore_then(arm)
-                                .or_not()
-                                .map(Option::unwrap_or_default),
+                            just(Token::FatArrow).ignore_then(
+                                statement_without_block_parser()
+                                    .then_ignore(just(Token::Comma))
+                                    .or(statement_with_block
+                                        .then_ignore(just(Token::Comma).or_not()))
+                                    .map(Vec::from),
+                            ),
                         )
+                        .repeated()
                         .delimited_by(just(Token::OpenBrace), just(Token::CloseBrace)),
                 )
-                .map(|(cond, (cases, default))| Statement::Switch {
-                    cond,
-                    cases,
-                    default,
-                });
+                .map(|(cond, arms)| Statement::Match { cond, arms });
 
             choice((
                 if_else,
                 r#loop,
                 r#while,
-                switch,
+                r#match,
                 block_parser.map(Statement::Block),
             ))
         });

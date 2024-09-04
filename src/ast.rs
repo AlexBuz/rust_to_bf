@@ -4,7 +4,7 @@ use {
     derive_more::{Display, From},
 };
 
-// TODO: Use a &str instead of a String
+// TODO: use a &str instead of a String
 pub type Ident = String;
 
 #[derive(Debug, Clone)]
@@ -17,7 +17,7 @@ pub enum Place {
 
 #[derive(Debug, Clone)]
 pub struct CallExpr {
-    // TODO: Instead of an Ident for the func, take an Expr to allow for dynamic dispatch.
+    // TODO: instead of an Ident for the func, take an Expr to allow for dynamic dispatch
     pub func: Ident,
     pub bang: bool,
     pub args: Vec<Expr>,
@@ -44,6 +44,7 @@ pub enum ArrayExpr {
 #[derive(Debug, Clone)]
 pub enum Expr {
     Int(usize),
+    Bool(bool),
     String(String),
     Place(Place),
     Ref { mutable: bool, place: Place },
@@ -67,6 +68,13 @@ pub enum AssignMode {
 }
 
 #[derive(Debug, Clone)]
+pub enum Pattern {
+    Int(usize),
+    Bool(bool),
+    Wildcard,
+}
+
+#[derive(Debug, Clone)]
 pub enum Statement {
     Let {
         mutable: bool,
@@ -82,10 +90,9 @@ pub enum Statement {
     Loop(Vec<Statement>),
     Continue,
     Break,
-    Switch {
+    Match {
         cond: Expr,
-        cases: Vec<(usize, Vec<Statement>)>,
-        default: Vec<Statement>,
+        arms: Vec<(Pattern, Vec<Statement>)>,
     },
     Block(Vec<Statement>),
     Return(Expr),
@@ -107,7 +114,7 @@ pub enum Type {
     Array { ty: Box<Type>, len: usize },
     Named(Ident),
     Ref { mutable: bool, ty: Box<Type> },
-    // TODO: Add support for function types
+    // TODO: support function types
     // Func {
     //     param_tys: Vec<Type>,
     //     ret_ty: Box<Type>,

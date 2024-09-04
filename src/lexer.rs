@@ -57,7 +57,10 @@ pub enum Token {
     Return,
     Break,
     Continue,
+    Underscore,
     // literals
+    True,
+    False,
     Int(String),
     Char(char),
     String(String),
@@ -130,6 +133,9 @@ fn keyword_lexer() -> impl Parser<char, Token, Error = Simple<char>> + Clone {
         text::keyword("return").to(Token::Return),
         text::keyword("break").to(Token::Break),
         text::keyword("continue").to(Token::Continue),
+        text::keyword("_").to(Token::Underscore),
+        text::keyword("true").to(Token::True),
+        text::keyword("false").to(Token::False),
     ])
 }
 
