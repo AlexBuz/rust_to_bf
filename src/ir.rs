@@ -53,11 +53,7 @@ pub enum IndirectPlace {
 
 impl IndirectPlace {
     fn resolve<'a>(&self, state: &'a mut MemoryState) -> &'a mut usize {
-        match self {
-            IndirectPlace::Deref { address } => {
-                DirectPlace::Address(*address.resolve(state)).resolve(state)
-            }
-        }
+        DirectPlace::Address(self.resolve_ref(state)).resolve(state)
     }
 
     fn resolve_ref(&self, state: &mut MemoryState) -> usize {

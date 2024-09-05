@@ -30,7 +30,7 @@ impl<'a, T> Typed<'a, T> {
         }
     }
 
-    fn expect(self, expected_ty: &Type<'a>, context: &str) -> T {
+    fn expect_ty(self, expected_ty: &Type<'a>, context: &str) -> T {
         if self.ty != *expected_ty {
             panic!("{context}: expected `{expected_ty}`, found `{}`", self.ty);
         }
@@ -77,6 +77,7 @@ static MACROS: &[&str] = &[
     "print",
     "println",
     "exit",
+    "panic",
 ];
 
 fn compile_macro_call<'a>(
@@ -104,7 +105,7 @@ fn compile_macro_call<'a>(
                 panic!("`{name}` requires at least 1 argument");
             }
             for arg in args {
-                let src = compile_expr(arg, scope, cur_frag).expect(&Type::Char, name);
+                let src = compile_expr(arg, scope, cur_frag).expect_ty(&Type::Char, name);
                 scope.global.frags[*cur_frag].push(ir::Instruction::Output { src });
                 scope.frame_offset = orig_frame_offset;
             }
@@ -162,7 +163,7 @@ fn compile_macro_call<'a>(
                     };
                     if format_specifier == b'%' {
                         scope.global.frags[*cur_frag].push(ir::Instruction::Output {
-                            src: ir::Value::Immediate(b'%' as _),
+                            src: ir::Value::Immediate(b'%' as usize),
                         });
                         continue;
                     }
@@ -176,10 +177,10 @@ fn compile_macro_call<'a>(
                         b's' => compile_macro_call("print_str", arg, scope, cur_frag),
                         _ => panic!("invalid format specifier"),
                     }
-                    .expect(&Type::unit(), name);
+                    .expect_ty(&Type::unit(), name);
                 } else {
                     scope.global.frags[*cur_frag].push(ir::Instruction::Output {
-                        src: ir::Value::Immediate(c as _),
+                        src: ir::Value::Immediate(c as usize),
                     });
                 }
             }
@@ -191,7 +192,7 @@ fn compile_macro_call<'a>(
         }
         "println" => {
             if !args.is_empty() {
-                compile_macro_call("print", args, scope, cur_frag).expect(&Type::unit(), name);
+                compile_macro_call("print", args, scope, cur_frag).expect_ty(&Type::unit(), name);
             }
             scope.global.frags[*cur_frag].push(ir::Instruction::Output {
                 src: ir::Value::Immediate(b'\n' as usize),
@@ -206,6 +207,23 @@ fn compile_macro_call<'a>(
             *cur_frag = EXIT_FRAG;
             Typed::new(stack_value_at(orig_frame_offset), Type::unit())
         }
+        "panic" => {
+            scope.global.frags[*cur_frag].extend(b"panicked: ".map(|byte| {
+                ir::Instruction::Output {
+                    src: ir::Value::Immediate(byte as usize),
+                }
+            }));
+            if args.is_empty() {
+                scope.global.frags[*cur_frag].extend(b"explicit panic\n".map(|byte| {
+                    ir::Instruction::Output {
+                        src: ir::Value::Immediate(byte as usize),
+                    }
+                }));
+            } else {
+                compile_macro_call("println", args, scope, cur_frag).expect_ty(&Type::unit(), name);
+            }
+            compile_macro_call("exit", &[], scope, cur_frag)
+        }
         "==" | "!=" => {
             let [lhs, rhs] = args else {
                 panic!("`{name}` requires exactly 2 arguments");
@@ -215,15 +233,17 @@ fn compile_macro_call<'a>(
             if lhs.ty != rhs.ty {
                 panic!("cannot compare `{}` to `{}`", lhs.ty, rhs.ty);
             }
-            let size = scope.size_of(&lhs.ty);
-            if size != 1 {
-                todo!("comparison of types with size != 1");
-            }
             let [if_same, if_diff] = match name {
                 "==" => [1, 0],
                 "!=" => [0, 1],
                 _ => unreachable!("the only comparison operators are `==` and `!=`"),
             };
+            let size = scope.size_of(&lhs.ty);
+            match size {
+                0 => return Typed::new(ir::Value::Immediate(if_same), Type::Bool),
+                1 => (),
+                2.. => todo!("comparison of large types"),
+            }
             match rhs.value {
                 ir::Value::At(src) => scope.global.frags[*cur_frag].extend([
                     ir::Instruction::Load { src, multiplier: 1 },
@@ -264,7 +284,7 @@ fn compile_macro_call<'a>(
             let short_circuit = scope.new_frag();
             let long_circuit = scope.new_frag();
 
-            let lhs = compile_expr_and_push(lhs, scope, cur_frag).expect(&Type::Bool, name);
+            let lhs = compile_expr_and_push(lhs, scope, cur_frag).expect_ty(&Type::Bool, name);
 
             let [false_circuit, true_circuit] = match name {
                 "&&" => [short_circuit, long_circuit],
@@ -280,7 +300,7 @@ fn compile_macro_call<'a>(
 
             *cur_frag = long_circuit;
             scope.frame_offset -= 1;
-            compile_expr_and_push(rhs, scope, cur_frag).expect(&Type::Bool, name);
+            compile_expr_and_push(rhs, scope, cur_frag).expect_ty(&Type::Bool, name);
             scope.global.frags[*cur_frag].extend(goto(short_circuit, scope.frame_call_offset));
 
             *cur_frag = short_circuit;
@@ -340,7 +360,7 @@ fn compile_func_call<'a>(
 
     // push the arguments
     for (arg, param) in args.iter().zip(&func_def.params) {
-        compile_expr_and_push(arg, scope, cur_frag).expect(&param.ty, name);
+        compile_expr_and_push(arg, scope, cur_frag).expect_ty(&param.ty, name);
     }
 
     // make the call
@@ -422,12 +442,12 @@ fn compile_struct_expr<'a>(
             Less | Equal => {
                 scope.frame_offset = field_info.frame_offset;
                 compile_expr_and_push(&field.value, scope, cur_frag)
-                    .expect(field_info.ty, &field.name);
+                    .expect_ty(field_info.ty, &field.name);
             }
             Greater => {
                 let prev_frame_offset = scope.frame_offset;
                 compile_expr_and_push(&field.value, scope, cur_frag)
-                    .expect(field_info.ty, &field.name);
+                    .expect_ty(field_info.ty, &field.name);
                 compile_move(
                     ir::Place::Direct(ir::DirectPlace::StackFrame {
                         offset: field_info.frame_offset,
@@ -479,9 +499,8 @@ fn compile_array_expr<'a>(
                     Some((first, rest)) => {
                         let first_ty = compile_expr_and_push(first, scope, cur_frag).ty;
                         for element in rest {
-                            if compile_expr_and_push(element, scope, cur_frag).ty != first_ty {
-                                panic!("array elements must all have the same type");
-                            }
+                            compile_expr_and_push(element, scope, cur_frag)
+                                .expect_ty(&first_ty, "array element");
                         }
                         first_ty
                     }
@@ -652,7 +671,7 @@ fn compile_index<'a>(
     let Type::Array { ty: elem_ty, .. } = base.ty else {
         panic!("cannot index into value of type `{}`", base.ty);
     };
-    let index = compile_expr(index, scope, cur_frag).expect(&Type::Usize, "array index");
+    let index = compile_expr(index, scope, cur_frag).expect_ty(&Type::Usize, "array index");
     let elem_size = scope.size_of(&elem_ty);
     let address = ir::DirectPlace::StackFrame {
         offset: scope.frame_offset + elem_size,
@@ -961,18 +980,13 @@ impl<'a> GlobalState<'a> {
     }
 }
 
-struct LoopInfo {
-    start: FragId,
-    after: FragId,
-}
-
 struct Scope<'a, 'b> {
     func_def: &'a FuncDef<'a>,
     vars: Vec<Var<'a>>,
     frame_offset: usize,
     frame_call_offset: usize,
     global: &'b mut GlobalState<'a>,
-    loop_stack: Vec<LoopInfo>,
+    loop_stack: Vec<FragPair>,
 }
 
 impl<'a, 'b> Scope<'a, 'b> {
@@ -1037,17 +1051,16 @@ impl<'a, 'b> Scope<'a, 'b> {
 fn execute_block<'a>(body: &'a [ast::Statement], scope: &mut Scope<'a, '_>, cur_frag: &mut FragId) {
     let block = compile_block(body, scope);
     scope.global.frags[*cur_frag].extend(goto(block.start, scope.frame_call_offset));
-    // TODO: if block.start == block.end, then inline the block
     *cur_frag = block.end;
 }
 
 #[must_use]
-struct CompiledBlock {
+struct FragPair {
     start: FragId,
     end: FragId,
 }
 
-fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>) -> CompiledBlock {
+fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>) -> FragPair {
     let orig_frame_offset = scope.frame_offset;
     let start_frag = scope.new_frag();
     let mut cur_frag = start_frag;
@@ -1069,7 +1082,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                             panic!("variable `{name}` needs a type annotation or a value")
                         }
                         (Some(ty), Some(value)) => {
-                            compile_expr_and_push(value, scope, &mut cur_frag).expect(&ty, name);
+                            compile_expr_and_push(value, scope, &mut cur_frag).expect_ty(&ty, name);
                             ty
                         }
                         (Some(ty), None) => {
@@ -1095,7 +1108,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                 let dst = compile_place(place, true, scope, &mut cur_frag);
                 compile_move(
                     dst.value,
-                    ir::Value::At(ir::Place::Direct(src.expect(&dst.ty, "assignment"))),
+                    ir::Value::At(ir::Place::Direct(src.expect_ty(&dst.ty, "assignment"))),
                     compile_store_mode(mode),
                     &dst.ty,
                     scope,
@@ -1106,9 +1119,9 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
             ast::Statement::Loop(ref body) => {
                 let after_loop = scope.new_frag();
                 let loop_start = scope.global.frags.len();
-                scope.loop_stack.push(LoopInfo {
+                scope.loop_stack.push(FragPair {
                     start: loop_start,
-                    after: after_loop,
+                    end: after_loop,
                 });
                 let loop_body = compile_block(body, scope);
                 assert!(loop_start == loop_body.start);
@@ -1118,20 +1131,18 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                 cur_frag = after_loop;
             }
             ast::Statement::Continue => {
-                let &LoopInfo { start, .. } = scope
-                    .loop_stack
-                    .last()
-                    .expect("`continue` may only be used inside a loop");
+                let Some(&FragPair { start, .. }) = scope.loop_stack.last() else {
+                    panic!("`continue` may only be used inside a loop");
+                };
                 scope.global.frags[cur_frag].extend(goto(start, scope.frame_call_offset));
                 cur_frag = EXIT_FRAG;
                 break;
             }
             ast::Statement::Break => {
-                let &LoopInfo { after, .. } = scope
-                    .loop_stack
-                    .last()
-                    .expect("`break` may only be used inside a loop");
-                scope.global.frags[cur_frag].extend(goto(after, scope.frame_call_offset));
+                let Some(&FragPair { end, .. }) = scope.loop_stack.last() else {
+                    panic!("`break` may only be used inside a loop");
+                };
+                scope.global.frags[cur_frag].extend(goto(end, scope.frame_call_offset));
                 cur_frag = EXIT_FRAG;
                 break;
             }
@@ -1140,7 +1151,9 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                 ref true_branch,
                 ref false_branch,
             } => {
-                match compile_expr(cond, scope, &mut cur_frag).expect(&Type::Bool, "if condition") {
+                match compile_expr(cond, scope, &mut cur_frag)
+                    .expect_ty(&Type::Bool, "if condition")
+                {
                     ir::Value::At(place) => {
                         let true_block = compile_block(true_branch, scope);
                         let false_block = compile_block(false_branch, scope);
@@ -1189,7 +1202,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                         }
                     };
                     ordered_arms
-                        .entry(pat.expect(&cond.ty, "match pattern"))
+                        .entry(pat.expect_ty(&cond.ty, "match pattern"))
                         .or_insert(body);
                 }
 
@@ -1235,7 +1248,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
             ast::Statement::Block(ref body) => execute_block(body, scope, &mut cur_frag),
             ast::Statement::Return(ref value) => {
                 let src = compile_expr(value, scope, &mut cur_frag)
-                    .expect(&scope.func_def.ret_ty, "return value");
+                    .expect_ty(&scope.func_def.ret_ty, "return value");
                 compile_move(
                     ir::Place::Direct(ir::DirectPlace::StackFrame { offset: 0 }),
                     src,
@@ -1255,7 +1268,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
         }
     }
     scope.shrink_frame(orig_frame_offset);
-    CompiledBlock {
+    FragPair {
         start: start_frag,
         end: cur_frag,
     }
@@ -1301,8 +1314,6 @@ static STD: LazyLock<ast::Ast> = LazyLock::new(|| {
             "mul" => "*",
             "div" => "/",
             "rem" => "%",
-            "eq" => "==",
-            "ne" => "!=",
             "lt" => "<",
             "le" => "<=",
             "gt" => ">",
@@ -1476,7 +1487,7 @@ pub fn compile(ast: &ast::Ast) -> ir::Program {
         panic!("`main` must return `()`");
     }
 
-    global_state.frags[EXIT_FRAG].clear(); // remove dead code
+    global_state.frags[EXIT_FRAG].clear(); // will never be executed
 
     ir::Program {
         instructions: vec![
@@ -1491,9 +1502,7 @@ pub fn compile(ast: &ast::Ast) -> ir::Program {
                 body: vec![ir::Instruction::Switch {
                     cond: ir::Place::Direct(ir::DirectPlace::StackFrame { offset: 0 }),
                     cases: global_state.frags,
-                    // default should never run unless we implement dynamic dispatch and an invalid function pointer is called
-                    // TODO: add some instructions to "panic" and exit in this case
-                    default: vec![],
+                    default: vec![], // should never be executed
                 }],
             },
         ],
