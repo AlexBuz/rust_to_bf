@@ -119,6 +119,7 @@ pub enum StoreMode {
 pub enum Instruction {
     Load {
         src: Place,
+        multiplier: usize,
     },
     LoadRef {
         src: Place,
@@ -158,9 +159,12 @@ pub enum Instruction {
 impl Instruction {
     pub fn execute(&self, state: &mut MemoryState, depth: usize) {
         match *self {
-            Instruction::Load { ref src } => {
-                indented_println!(depth, "reg += {src};");
-                state.reg += *src.resolve(state);
+            Instruction::Load {
+                ref src,
+                multiplier,
+            } => {
+                indented_println!(depth, "reg += {multiplier} * {src};");
+                state.reg += multiplier * *src.resolve(state);
             }
             Instruction::LoadRef { ref src } => {
                 indented_println!(depth, "reg += &{src};");

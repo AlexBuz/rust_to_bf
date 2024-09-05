@@ -226,7 +226,7 @@ fn compile_macro_call<'a>(
             };
             match rhs.value {
                 ir::Value::At(src) => scope.global.frags[*cur_frag].extend([
-                    ir::Instruction::Load { src },
+                    ir::Instruction::Load { src, multiplier: 1 },
                     ir::Instruction::Store {
                         dst: ir::Place::Direct(lhs.value),
                         store_mode: ir::StoreMode::Subtract,
@@ -664,17 +664,13 @@ fn compile_index<'a>(
             store_mode: ir::StoreMode::Replace,
         },
     ]);
-    // TODO: turn this into a single move (by adding a multiplier to the store mode/instruction)
-    for _ in 0..elem_size * 2 {
-        compile_move(
-            ir::Place::Direct(address),
-            index,
-            ir::StoreMode::Add,
-            &Type::Usize,
-            scope,
-            *cur_frag,
-        );
-    }
+    compile_single_move(
+        ir::Place::Direct(address),
+        index,
+        ir::StoreMode::Add,
+        elem_size * 2,
+        &mut scope.global.frags[*cur_frag],
+    );
     Typed::new(
         ir::Place::Indirect(ir::IndirectPlace::Deref { address }),
         *elem_ty,
@@ -831,20 +827,46 @@ fn increment_place(place: &mut ir::Place, cur_frag: &mut Vec<ir::Instruction>, a
 }
 
 fn own_place(place: &mut ir::Place, cur_frag: &mut Vec<ir::Instruction>, new_frame_offset: usize) {
-    if let ir::Place::Indirect(ir::IndirectPlace::Deref { address }) = place {
-        let owned_address = ir::DirectPlace::StackFrame {
-            offset: new_frame_offset,
-        };
-        cur_frag.extend([
-            ir::Instruction::Load {
-                src: ir::Place::Direct(*address),
-            },
-            ir::Instruction::Store {
-                dst: ir::Place::Direct(owned_address),
-                store_mode: ir::StoreMode::Replace,
-            },
-        ]);
-        *address = owned_address;
+    let ir::Place::Indirect(ir::IndirectPlace::Deref { address }) = place else {
+        return;
+    };
+    let owned_address = ir::DirectPlace::StackFrame {
+        offset: new_frame_offset,
+    };
+    cur_frag.extend([
+        ir::Instruction::Load {
+            src: ir::Place::Direct(*address),
+            multiplier: 1,
+        },
+        ir::Instruction::Store {
+            dst: ir::Place::Direct(owned_address),
+            store_mode: ir::StoreMode::Replace,
+        },
+    ]);
+    *address = owned_address;
+}
+
+fn compile_single_move(
+    dst: ir::Place,
+    src: ir::Value,
+    store_mode: ir::StoreMode,
+    multiplier: usize,
+    cur_frag: &mut Vec<ir::Instruction>,
+) {
+    match src {
+        ir::Value::Immediate(value) => {
+            cur_frag.extend([ir::Instruction::StoreImm {
+                dst,
+                value: value * multiplier,
+                store_mode,
+            }]);
+        }
+        ir::Value::At(src) => {
+            cur_frag.extend([
+                ir::Instruction::Load { src, multiplier },
+                ir::Instruction::Store { dst, store_mode },
+            ]);
+        }
     }
 }
 
@@ -860,21 +882,7 @@ fn compile_move<'a>(
     let cur_frag = &mut scope.global.frags[cur_frag];
     match size {
         0 => {}
-        1 => match src {
-            ir::Value::Immediate(value) => {
-                cur_frag.extend([ir::Instruction::StoreImm {
-                    dst,
-                    value,
-                    store_mode,
-                }]);
-            }
-            ir::Value::At(src) => {
-                cur_frag.extend([
-                    ir::Instruction::Load { src },
-                    ir::Instruction::Store { dst, store_mode },
-                ]);
-            }
-        },
+        1 => compile_single_move(dst, src, store_mode, 1, cur_frag),
         2.. => {
             let ir::Value::At(mut src) = src else {
                 unreachable!("expected source value to be a place in a move of size > 1");
@@ -883,7 +891,7 @@ fn compile_move<'a>(
             own_place(&mut src, cur_frag, scope.frame_offset + size + 1);
             for _ in 0..size {
                 cur_frag.extend([
-                    ir::Instruction::Load { src },
+                    ir::Instruction::Load { src, multiplier: 1 },
                     ir::Instruction::Store { dst, store_mode },
                 ]);
                 increment_place(&mut dst, cur_frag, 1);

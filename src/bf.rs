@@ -47,7 +47,7 @@ impl DirectPlace {
         }
     }
 
-    pub fn convert_load_to_bf(&self, output: &mut String) {
+    pub fn convert_load_to_bf(&self, output: &mut String, multiplier: usize) {
         let (sb_to_src, src_to_sb) = self.path_to_and_from();
 
         // go to the source cell
@@ -57,7 +57,10 @@ impl DirectPlace {
         output.push_str("[-<+>]");
 
         // copy the value to reg0
-        output.push_str(&format!("<[->+{src_to_sb}<<+>>{sb_to_src}<]>"));
+        output.push_str(&format!(
+            "<[->+{src_to_sb}<<{}>>{sb_to_src}<]>",
+            "+".repeat(multiplier)
+        ));
 
         // go back to the stack base
         output.push_str(&src_to_sb);
@@ -106,7 +109,7 @@ impl IndirectPlace {
                 let mut sb_to_place = String::new();
 
                 // put the address in reg0
-                address.convert_load_to_bf(&mut sb_to_place);
+                address.convert_load_to_bf(&mut sb_to_place, 1);
 
                 // leave a trail of mem markers up to the desired location
                 sb_to_place.push_str("<<");
@@ -122,17 +125,22 @@ impl IndirectPlace {
         }
     }
 
-    pub fn convert_load_to_bf(&self, output: &mut String) {
+    pub fn convert_load_to_bf(&self, output: &mut String, multiplier: usize) {
         match self {
             Deref { .. } => {
                 let (sb_to_place, place_to_sb) = self.path_to_and_from();
+
+                // go to the source cell
                 output.push_str(&sb_to_place);
 
                 // use temp cell to preserve the value
                 output.push_str("[-<+>]");
 
                 // copy the value to reg0
-                output.push_str(&format!("<[->+{MEM_CELL_TO_SB}<<+>>{SB_TO_MEM_CELL}<]>"));
+                output.push_str(&format!(
+                    "<[->+{MEM_CELL_TO_SB}<<{}>>{SB_TO_MEM_CELL}<]>",
+                    "+".repeat(multiplier)
+                ));
 
                 // go back to the stack base
                 output.push_str(&place_to_sb);
@@ -189,10 +197,10 @@ impl IndirectPlace {
 }
 
 impl Place {
-    pub fn convert_load_to_bf(&self, output: &mut String) {
+    pub fn convert_load_to_bf(&self, output: &mut String, multiplier: usize) {
         match self {
-            Direct(direct) => direct.convert_load_to_bf(output),
-            Indirect(indirect) => indirect.convert_load_to_bf(output),
+            Direct(direct) => direct.convert_load_to_bf(output, multiplier),
+            Indirect(indirect) => indirect.convert_load_to_bf(output, multiplier),
         }
     }
 
@@ -222,7 +230,7 @@ impl Place {
                 }
             },
             Indirect(indirect) => match indirect {
-                Deref { address } => address.convert_load_to_bf(output),
+                Deref { address } => address.convert_load_to_bf(output, 1),
             },
         }
     }
@@ -253,8 +261,8 @@ impl Instruction {
     fn convert_to_bf(&self, output: &mut String) {
         // pointer should be at the stack base before and after each instruction
         match *self {
-            Load { src } => {
-                src.convert_load_to_bf(output);
+            Load { src, multiplier } => {
+                src.convert_load_to_bf(output, multiplier);
             }
             LoadRef { src } => {
                 src.convert_load_ref_to_bf(output);
@@ -312,7 +320,7 @@ impl Instruction {
                         instr.convert_to_bf(output);
                     }
                 } else {
-                    cond.convert_load_to_bf(output);
+                    cond.convert_load_to_bf(output, 1);
                     if cases.iter().all(Vec::is_empty) {
                         // optimization for switches that express `if x > some_literal { ... do stuff ...  } else { do nothing }`
                         // note that it's safe to subtract 1 from cases.len() because we know cases is nonempty at this point
