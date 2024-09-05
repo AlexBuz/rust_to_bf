@@ -50,7 +50,7 @@ fn place_parser(
 }
 
 fn int_parser() -> impl Parser<Token, usize, Error = Simple<Token>> + Clone {
-    select! { Token::Int(int) => int }.from_str().unwrapped()
+    select! { Token::Int(i) => i }.from_str().unwrapped()
 }
 
 fn char_parser() -> impl Parser<Token, char, Error = Simple<Token>> + Clone {
@@ -64,8 +64,8 @@ fn bool_parser() -> impl Parser<Token, bool, Error = Simple<Token>> + Clone {
     }
 }
 
-fn string_parser() -> impl Parser<Token, String, Error = Simple<Token>> + Clone {
-    select! { Token::String(string) => string }
+fn str_parser() -> impl Parser<Token, String, Error = Simple<Token>> + Clone {
+    select! { Token::Str(s) => s }
 }
 
 fn tuple_parser<Elem: Clone>(
@@ -166,7 +166,7 @@ fn atom_parser(
             int_parser().map(Expr::Int),
             char_parser().map(Expr::Char),
             bool_parser().map(Expr::Bool),
-            string_parser().map(Expr::String),
+            str_parser().map(Expr::Str),
             ref_expr,
             (struct_expr(0).or(expr_parser))
                 .delimited_by(just(Token::OpenParen), just(Token::CloseParen)),

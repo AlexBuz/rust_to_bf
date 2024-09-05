@@ -64,7 +64,7 @@ pub enum Token {
     False,
     Int(String),
     Char(char),
-    String(String),
+    Str(String),
     // identifiers
     Ident(Ident),
 }
@@ -157,7 +157,7 @@ fn string_literal_lexer() -> impl Parser<char, Token, Error = Simple<char>> + Cl
     just('"')
         .ignore_then(none_of("\"\\").or(char_escape_lexer()).repeated().collect())
         .then_ignore(just('"'))
-        .map(Token::String)
+        .map(Token::Str)
 }
 
 fn char_literal_lexer() -> impl Parser<char, Token, Error = Simple<char>> + Clone {

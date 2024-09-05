@@ -46,7 +46,7 @@ pub enum Expr {
     Int(usize),
     Char(char),
     Bool(bool),
-    String(String),
+    Str(String),
     Place(Place),
     Ref { mutable: bool, place: Place },
     Call(CallExpr),

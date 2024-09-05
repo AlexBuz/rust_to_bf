@@ -70,16 +70,16 @@ fn stack_value_at(offset: usize) -> ir::Value {
     ir::Value::At(ir::Place::Direct(ir::DirectPlace::StackFrame { offset }))
 }
 
-static INTRINSICS: &[&str] = &[
+static MACROS: &[&str] = &[
     "read_char",
     "print_char",
+    "print_str",
     "print",
     "println",
-    "printf",
     "exit",
 ];
 
-fn compile_intrinsic_call<'a>(
+fn compile_macro_call<'a>(
     name: &str,
     args: &'a [ast::Expr],
     scope: &mut Scope<'a, '_>,
@@ -106,20 +106,20 @@ fn compile_intrinsic_call<'a>(
             for arg in args {
                 let src = compile_expr(arg, scope, cur_frag).expect(&Type::Char, name);
                 scope.global.frags[*cur_frag].push(ir::Instruction::Output { src });
+                scope.frame_offset = orig_frame_offset;
             }
-            scope.frame_offset = orig_frame_offset;
             Typed::new(stack_value_at(orig_frame_offset), Type::unit())
         }
-        "print" => {
+        "print_str" => {
             if args.is_empty() {
                 panic!("`{name}` requires at least 1 argument");
             }
             for arg in args {
                 match arg {
-                    ast::Expr::String(s) => {
+                    ast::Expr::Str(s) => {
                         scope.global.frags[*cur_frag].extend(s.bytes().map(|byte| {
                             ir::Instruction::Output {
-                                src: ir::Value::Immediate(byte as _),
+                                src: ir::Value::Immediate(byte as usize),
                             }
                         }));
                     }
@@ -146,21 +146,12 @@ fn compile_intrinsic_call<'a>(
             }
             Typed::new(stack_value_at(orig_frame_offset), Type::unit())
         }
-        "println" => {
-            if !args.is_empty() {
-                compile_intrinsic_call("print", args, scope, cur_frag).expect(&Type::unit(), name);
-            }
-            scope.global.frags[*cur_frag].push(ir::Instruction::Output {
-                src: ir::Value::Immediate(b'\n' as _),
-            });
-            Typed::new(stack_value_at(orig_frame_offset), Type::unit())
-        }
-        "printf" => {
+        "print" => {
             let Some((first_arg, mut args)) = args.split_first() else {
                 panic!("`{name}` requires at least 1 argument");
             };
             let format_string = match first_arg {
-                ast::Expr::String(s) => s,
+                ast::Expr::Str(s) => s,
                 _ => panic!("first argument to `{name}` must be a string literal"),
             };
             let mut format_chars = format_string.bytes();
@@ -180,9 +171,9 @@ fn compile_intrinsic_call<'a>(
                     };
                     args = rest;
                     match format_specifier {
-                        b'c' => compile_intrinsic_call("print_char", arg, scope, cur_frag),
-                        b's' => compile_intrinsic_call("print", arg, scope, cur_frag),
-                        b'd' => compile_func_call("print_int", arg, scope, cur_frag),
+                        b'i' | b'd' => compile_func_call("print_int", arg, scope, cur_frag),
+                        b'c' => compile_macro_call("print_char", arg, scope, cur_frag),
+                        b's' => compile_macro_call("print_str", arg, scope, cur_frag),
                         _ => panic!("invalid format specifier"),
                     }
                     .expect(&Type::unit(), name);
@@ -196,6 +187,15 @@ fn compile_intrinsic_call<'a>(
             if !args.is_empty() {
                 panic!("too many arguments for format string `{format_string}`");
             }
+            Typed::new(stack_value_at(orig_frame_offset), Type::unit())
+        }
+        "println" => {
+            if !args.is_empty() {
+                compile_macro_call("print", args, scope, cur_frag).expect(&Type::unit(), name);
+            }
+            scope.global.frags[*cur_frag].push(ir::Instruction::Output {
+                src: ir::Value::Immediate(b'\n' as usize),
+            });
             Typed::new(stack_value_at(orig_frame_offset), Type::unit())
         }
         "exit" => {
@@ -291,7 +291,7 @@ fn compile_intrinsic_call<'a>(
             if scope.global.func_defs.contains_key(name) {
                 panic!("function `{name}` must be called without `!`");
             } else {
-                panic!("intrinsic `{name}` does not exist");
+                panic!("macro `{name}` does not exist");
             }
         }
     }
@@ -361,7 +361,7 @@ fn compile_call<'a>(
     cur_frag: &mut FragId,
 ) -> Typed<'a, ir::Value> {
     if call_expr.bang {
-        compile_intrinsic_call(&call_expr.func, &call_expr.args, scope, cur_frag)
+        compile_macro_call(&call_expr.func, &call_expr.args, scope, cur_frag)
     } else {
         compile_func_call(&call_expr.func, &call_expr.args, scope, cur_frag)
     }
@@ -736,14 +736,14 @@ fn compile_ref<'a>(
     )
 }
 
-fn compile_string<'a>(s: &'a str, scope: &mut Scope<'a, '_>) -> Typed<'a, ir::Value> {
+fn compile_str<'a>(s: &'a str, scope: &mut Scope<'a, '_>) -> Typed<'a, ir::Value> {
     Typed::new(
         ir::Value::Immediate(*scope.global.string_ids.entry(s).or_insert_with(|| {
             scope.global.frags.push(
                 [ir::Instruction::RestoreFrame { size: 1 }]
                     .into_iter()
                     .chain(s.bytes().map(|byte| ir::Instruction::Output {
-                        src: ir::Value::Immediate(byte as _),
+                        src: ir::Value::Immediate(byte as usize),
                     }))
                     .collect(),
             );
@@ -765,7 +765,7 @@ fn compile_expr<'a>(
         ast::Expr::Int(i) => Typed::new(ir::Value::Immediate(i), Type::Usize),
         ast::Expr::Char(c) => Typed::new(ir::Value::Immediate(c as usize), Type::Char),
         ast::Expr::Bool(b) => Typed::new(ir::Value::Immediate(b as usize), Type::Bool),
-        ast::Expr::String(ref s) => compile_string(s, scope),
+        ast::Expr::Str(ref s) => compile_str(s, scope),
         ast::Expr::Place(ref place) => {
             compile_place(place, false, scope, cur_frag).map(ir::Value::At)
         }
@@ -1260,8 +1260,8 @@ fn compile_func<'a>(name: &'a str, global_state: &mut GlobalState<'a>) -> FragId
     }
 
     let func_def = global_state.func_defs.get(name).unwrap_or_else(|| {
-        if INTRINSICS.contains(&name) {
-            panic!("intrinsic `{name}` must be called with `!`");
+        if MACROS.contains(&name) {
+            panic!("macro `{name}` must be called with `!`");
         } else {
             panic!("function `{name}` not defined");
         }
