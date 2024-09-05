@@ -45,6 +45,7 @@ pub enum Token {
     // references
     And,
     // keywords
+    As,
     Let,
     Mut,
     Fn,
@@ -121,6 +122,7 @@ fn operator_lexer() -> impl Parser<char, Token, Error = Simple<char>> + Clone {
 
 fn keyword_lexer() -> impl Parser<char, Token, Error = Simple<char>> + Clone {
     choice([
+        text::keyword("as").to(Token::As),
         text::keyword("let").to(Token::Let),
         text::keyword("mut").to(Token::Mut),
         text::keyword("fn").to(Token::Fn),
@@ -147,6 +149,7 @@ fn char_escape_lexer() -> impl Parser<char, char, Error = Simple<char>> + Clone 
         just('\\').to('\\'),
         just('"').to('"'),
         just('\'').to('\''),
+        just('0').to('\0'),
     ]))
 }
 

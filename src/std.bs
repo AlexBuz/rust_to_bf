@@ -35,8 +35,9 @@ fn div(mut dividend: usize, divisor: usize) -> usize {
                         remainder = divisor;
                         quotient += 1;
                     }
-                    _ => remainder -= 1,
+                    _ => {}
                 }
+                remainder -= 1;
             }
         }
     }
@@ -64,8 +65,9 @@ fn rem(mut dividend: usize, divisor: usize) -> usize {
                         remainder = divisor;
                         quotient += 1;
                     }
-                    _ => remainder -= 1,
+                    _ => {}
                 }
+                remainder -= 1;
             }
         }
     }
@@ -78,22 +80,6 @@ fn rem(mut dividend: usize, divisor: usize) -> usize {
         }
     }
     return remainder;
-}
-
-fn eq(mut a: usize, b: usize) -> bool {
-    a -= b;
-    match a {
-        0 => return true,
-        _ => return false,
-    }
-}
-
-fn ne(mut a: usize, b: usize) -> bool {
-    a -= b;
-    match a {
-        0 => return false,
-        _ => return true,
-    }
 }
 
 fn lt(mut a: usize, mut b: usize) -> bool {
@@ -182,8 +168,9 @@ fn print_int(mut num: usize) {
                         remainder = divisor;
                         quotient += 1;
                     }
-                    _ => remainder -= 1,
+                    _ => {}
                 }
+                remainder -= 1;
             }
         }
     }
@@ -196,24 +183,22 @@ fn print_int(mut num: usize) {
         }
     }
     match quotient {
-        0 => {},
+        0 => {}
         _ => print_int(quotient),
     }
     remainder += 48;
-    print_char!(remainder);
+    print_char!(remainder as char);
 }
 
 fn read_int() -> usize {
-    let mut c = 0;
     let mut num = 0;
     loop {
-        c = read_char!();
-        if c == '\n' {
-            break;
-        }
+        let mut c = read_char!() as usize;
         c -= 48;
+        if c > 9 {
+            return num;
+        }
         num *= 10;
         num += c;
     }
-    return num;
 }

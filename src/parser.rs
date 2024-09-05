@@ -53,12 +53,15 @@ fn int_parser() -> impl Parser<Token, usize, Error = Simple<Token>> + Clone {
     select! { Token::Int(int) => int }.from_str().unwrapped()
 }
 
-fn int_or_char_parser() -> impl Parser<Token, usize, Error = Simple<Token>> + Clone {
-    int_parser().or(select! { Token::Char(c) => c as usize })
+fn char_parser() -> impl Parser<Token, char, Error = Simple<Token>> + Clone {
+    select! { Token::Char(c) => c }
 }
 
 fn bool_parser() -> impl Parser<Token, bool, Error = Simple<Token>> + Clone {
-    select! { Token::True => true, Token::False => false }
+    select! {
+        Token::True => true,
+        Token::False => false,
+    }
 }
 
 fn string_parser() -> impl Parser<Token, String, Error = Simple<Token>> + Clone {
@@ -160,7 +163,8 @@ fn atom_parser(
             tuple_parser(expr_parser.clone()).map(Expr::Tuple),
             array_expr,
             place_parser(atom_parser).map(Expr::Place),
-            int_or_char_parser().map(Expr::Int),
+            int_parser().map(Expr::Int),
+            char_parser().map(Expr::Char),
             bool_parser().map(Expr::Bool),
             string_parser().map(Expr::String),
             ref_expr,
@@ -184,6 +188,14 @@ fn expr_parser(
                     bang: false,
                     args: vec![expr],
                 })
+            });
+
+        let prec = prec
+            .clone()
+            .then(just(Token::As).ignore_then(type_parser()).repeated())
+            .foldl(|expr, ty| Expr::Cast {
+                expr: Box::new(expr),
+                ty,
             });
 
         let prec = prec
@@ -237,7 +249,7 @@ fn expr_parser(
             .foldl(|lhs, (op, rhs)| {
                 Expr::Call(CallExpr {
                     func: op.to_string(),
-                    bang: false,
+                    bang: matches!(op, "==" | "!="),
                     args: vec![lhs, rhs],
                 })
             });
@@ -271,7 +283,8 @@ fn maybe_token(token: Token) -> impl Parser<Token, bool, Error = Simple<Token>> 
 
 fn pattern_parser() -> impl Parser<Token, Pattern, Error = Simple<Token>> + Clone {
     choice((
-        int_or_char_parser().map(Pattern::Int),
+        int_parser().map(Pattern::Int),
+        char_parser().map(Pattern::Char),
         bool_parser().map(Pattern::Bool),
         just(Token::Underscore).to(Pattern::Wildcard),
     ))
@@ -338,16 +351,14 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
                     mode: AssignMode::Replace,
                 }],
             ];
-            let [false_arm, true_arm] = match op {
+            let [false_branch, true_branch] = match op {
                 ShortCircuitOp::And => [short_circuit, long_circuit],
                 ShortCircuitOp::Or => [long_circuit, short_circuit],
             };
-            Statement::Match {
+            Statement::If {
                 cond: Expr::Place(place),
-                arms: vec![
-                    (Pattern::Bool(false), false_arm),
-                    (Pattern::Wildcard, true_arm),
-                ],
+                true_branch,
+                false_branch,
             }
         });
 
@@ -378,14 +389,13 @@ fn block_parser() -> impl Parser<Token, Vec<Statement>, Error = Simple<Token>> +
                             if_else.map(|statement| vec![statement]),
                             block_parser.clone(),
                         )))
-                        .or_not(),
+                        .or_not()
+                        .map(Option::unwrap_or_default),
                 )
-                .map(|((cond, main_body), else_body)| Statement::Match {
+                .map(|((cond, true_branch), false_branch)| Statement::If {
                     cond,
-                    arms: vec![
-                        (Pattern::Bool(false), else_body.unwrap_or_default()),
-                        (Pattern::Wildcard, main_body),
-                    ],
+                    true_branch,
+                    false_branch,
                 })
         });
 
@@ -397,12 +407,10 @@ fn block_parser() -> impl Parser<Token, Vec<Statement>, Error = Simple<Token>> +
             .ignore_then(expr_parser(true))
             .then(block_parser.clone())
             .map(|(cond, body)| {
-                Statement::Loop(vec![Statement::Match {
+                Statement::Loop(vec![Statement::If {
                     cond,
-                    arms: vec![
-                        (Pattern::Bool(false), vec![Statement::Break]),
-                        (Pattern::Wildcard, body),
-                    ],
+                    true_branch: body,
+                    false_branch: vec![Statement::Break],
                 }])
             });
 
@@ -423,7 +431,7 @@ fn block_parser() -> impl Parser<Token, Vec<Statement>, Error = Simple<Token>> +
                         .repeated()
                         .delimited_by(just(Token::OpenBrace), just(Token::CloseBrace)),
                 )
-                .map(|(cond, arms)| Statement::Match { cond, arms });
+                .map(|(scrutinee, arms)| Statement::Match { scrutinee, arms });
 
             choice((
                 if_else,

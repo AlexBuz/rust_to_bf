@@ -30,17 +30,17 @@ impl<'a, T> Typed<'a, T> {
         }
     }
 
-    fn expect(self, expected_ty: &Type<'a>) -> T {
-        if &self.ty != expected_ty {
-            panic!("expected `{expected_ty}`, found `{}`", self.ty);
+    fn expect(self, expected_ty: &Type<'a>, context: &str) -> T {
+        if self.ty != *expected_ty {
+            panic!("{context}: expected `{expected_ty}`, found `{}`", self.ty);
         }
         self.value
     }
 
-    fn expect_ref(self, expected_ty: &Type<'a>) -> T {
+    fn expect_ref(self, expected_ty: &Type<'a>, context: &str) -> T {
         match self.ty {
             Type::Ref { ty, .. } if *ty == *expected_ty => self.value,
-            _ => panic!("expected `&{expected_ty}`, found `{}`", self.ty),
+            _ => panic!("{context}: expected `&{expected_ty}`, found `{}`", self.ty),
         }
     }
 }
@@ -97,14 +97,14 @@ fn compile_intrinsic_call<'a>(
                 }),
             }]);
             scope.frame_offset += 1;
-            Typed::new(stack_value_at(orig_frame_offset), Type::Usize)
+            Typed::new(stack_value_at(orig_frame_offset), Type::Char)
         }
         "print_char" => {
             if args.is_empty() {
                 panic!("`{name}` requires at least 1 argument");
             }
             for arg in args {
-                let src = compile_expr(arg, scope, cur_frag).expect(&Type::Usize);
+                let src = compile_expr(arg, scope, cur_frag).expect(&Type::Char, name);
                 scope.global.frags[*cur_frag].push(ir::Instruction::Output { src });
             }
             scope.frame_offset = orig_frame_offset;
@@ -133,7 +133,7 @@ fn compile_intrinsic_call<'a>(
                             .push(set_imm(scope.frame_offset, return_frag));
                         scope.frame_offset += 1;
 
-                        compile_expr_and_push(arg, scope, cur_frag).expect_ref(&Type::Str);
+                        compile_expr_and_push(arg, scope, cur_frag).expect_ref(&Type::Str, name);
 
                         scope.global.frags[*cur_frag].extend([ir::Instruction::SaveFrame {
                             size: scope.frame_offset - 1,
@@ -148,7 +148,7 @@ fn compile_intrinsic_call<'a>(
         }
         "println" => {
             if !args.is_empty() {
-                compile_intrinsic_call("print", args, scope, cur_frag).expect(&Type::unit());
+                compile_intrinsic_call("print", args, scope, cur_frag).expect(&Type::unit(), name);
             }
             scope.global.frags[*cur_frag].push(ir::Instruction::Output {
                 src: ir::Value::Immediate(b'\n' as _),
@@ -185,7 +185,7 @@ fn compile_intrinsic_call<'a>(
                         b'd' => compile_func_call("print_int", arg, scope, cur_frag),
                         _ => panic!("invalid format specifier"),
                     }
-                    .expect(&Type::unit());
+                    .expect(&Type::unit(), name);
                 } else {
                     scope.global.frags[*cur_frag].push(ir::Instruction::Output {
                         src: ir::Value::Immediate(c as _),
@@ -206,16 +206,65 @@ fn compile_intrinsic_call<'a>(
             *cur_frag = EXIT_FRAG;
             Typed::new(stack_value_at(orig_frame_offset), Type::unit())
         }
+        "==" | "!=" => {
+            let [lhs, rhs] = args else {
+                panic!("`{name}` requires exactly 2 arguments");
+            };
+            let lhs = compile_expr_and_push(lhs, scope, cur_frag);
+            let rhs = compile_expr(rhs, scope, cur_frag);
+            if lhs.ty != rhs.ty {
+                panic!("cannot compare `{}` to `{}`", lhs.ty, rhs.ty);
+            }
+            let size = scope.size_of(&lhs.ty);
+            if size != 1 {
+                todo!("comparison of types with size != 1");
+            }
+            let [if_same, if_diff] = match name {
+                "==" => [1, 0],
+                "!=" => [0, 1],
+                _ => unreachable!("the only comparison operators are `==` and `!=`"),
+            };
+            match rhs.value {
+                ir::Value::At(src) => scope.global.frags[*cur_frag].extend([
+                    ir::Instruction::Load { src },
+                    ir::Instruction::Store {
+                        dst: ir::Place::Direct(lhs.value),
+                        store_mode: ir::StoreMode::Subtract,
+                    },
+                ]),
+                ir::Value::Immediate(value) => {
+                    scope.global.frags[*cur_frag].push(ir::Instruction::StoreImm {
+                        dst: ir::Place::Direct(lhs.value),
+                        value,
+                        store_mode: ir::StoreMode::Subtract,
+                    })
+                }
+            }
+            scope.global.frags[*cur_frag].extend([ir::Instruction::Switch {
+                cond: ir::Place::Direct(lhs.value),
+                cases: vec![vec![ir::Instruction::StoreImm {
+                    dst: ir::Place::Direct(lhs.value),
+                    value: if_same,
+                    store_mode: ir::StoreMode::Replace,
+                }]],
+                default: vec![ir::Instruction::StoreImm {
+                    dst: ir::Place::Direct(lhs.value),
+                    value: if_diff,
+                    store_mode: ir::StoreMode::Replace,
+                }],
+            }]);
+            scope.frame_offset = orig_frame_offset + size;
+            Typed::new(stack_value_at(orig_frame_offset), Type::Bool)
+        }
         "&&" | "||" => {
-            let Some(([lhs, rhs], [])) = args.split_first_chunk() else {
+            let [lhs, rhs] = args else {
                 panic!("`{name}` requires exactly 2 arguments");
             };
 
             let short_circuit = scope.new_frag();
-
             let long_circuit = scope.new_frag();
 
-            let lhs = compile_expr_and_push(lhs, scope, cur_frag).expect(&Type::Bool);
+            let lhs = compile_expr_and_push(lhs, scope, cur_frag).expect(&Type::Bool, name);
 
             let [false_circuit, true_circuit] = match name {
                 "&&" => [short_circuit, long_circuit],
@@ -231,7 +280,7 @@ fn compile_intrinsic_call<'a>(
 
             *cur_frag = long_circuit;
             scope.frame_offset -= 1;
-            compile_expr_and_push(rhs, scope, cur_frag).expect(&Type::Bool);
+            compile_expr_and_push(rhs, scope, cur_frag).expect(&Type::Bool, name);
             scope.global.frags[*cur_frag].extend(goto(short_circuit, scope.frame_call_offset));
 
             *cur_frag = short_circuit;
@@ -291,7 +340,7 @@ fn compile_func_call<'a>(
 
     // push the arguments
     for (arg, param) in args.iter().zip(&func_def.params) {
-        compile_expr_and_push(arg, scope, cur_frag).expect(&param.ty);
+        compile_expr_and_push(arg, scope, cur_frag).expect(&param.ty, name);
     }
 
     // make the call
@@ -372,11 +421,13 @@ fn compile_struct_expr<'a>(
         match scope.frame_offset.cmp(&field_info.frame_offset) {
             Less | Equal => {
                 scope.frame_offset = field_info.frame_offset;
-                compile_expr_and_push(&field.value, scope, cur_frag).expect(field_info.ty);
+                compile_expr_and_push(&field.value, scope, cur_frag)
+                    .expect(field_info.ty, &field.name);
             }
             Greater => {
                 let prev_frame_offset = scope.frame_offset;
-                compile_expr_and_push(&field.value, scope, cur_frag).expect(field_info.ty);
+                compile_expr_and_push(&field.value, scope, cur_frag)
+                    .expect(field_info.ty, &field.name);
                 compile_move(
                     ir::Place::Direct(ir::DirectPlace::StackFrame {
                         offset: field_info.frame_offset,
@@ -601,7 +652,7 @@ fn compile_index<'a>(
     let Type::Array { ty: elem_ty, .. } = base.ty else {
         panic!("cannot index into value of type `{}`", base.ty);
     };
-    let index = compile_expr(index, scope, cur_frag).expect(&Type::Usize);
+    let index = compile_expr(index, scope, cur_frag).expect(&Type::Usize, "array index");
     let elem_size = scope.size_of(&elem_ty);
     let address = ir::DirectPlace::StackFrame {
         offset: scope.frame_offset + elem_size,
@@ -685,14 +736,6 @@ fn compile_ref<'a>(
     )
 }
 
-fn compile_int<'a>(value: usize) -> Typed<'a, ir::Value> {
-    Typed::new(ir::Value::Immediate(value), Type::Usize)
-}
-
-fn compile_bool<'a>(value: bool) -> Typed<'a, ir::Value> {
-    Typed::new(ir::Value::Immediate(value as _), Type::Bool)
-}
-
 fn compile_string<'a>(s: &'a str, scope: &mut Scope<'a, '_>) -> Typed<'a, ir::Value> {
     Typed::new(
         ir::Value::Immediate(*scope.global.string_ids.entry(s).or_insert_with(|| {
@@ -719,8 +762,9 @@ fn compile_expr<'a>(
     cur_frag: &mut FragId,
 ) -> Typed<'a, ir::Value> {
     match *expr {
-        ast::Expr::Int(i) => compile_int(i),
-        ast::Expr::Bool(b) => compile_bool(b),
+        ast::Expr::Int(i) => Typed::new(ir::Value::Immediate(i), Type::Usize),
+        ast::Expr::Char(c) => Typed::new(ir::Value::Immediate(c as usize), Type::Char),
+        ast::Expr::Bool(b) => Typed::new(ir::Value::Immediate(b as usize), Type::Bool),
         ast::Expr::String(ref s) => compile_string(s, scope),
         ast::Expr::Place(ref place) => {
             compile_place(place, false, scope, cur_frag).map(ir::Value::At)
@@ -730,6 +774,14 @@ fn compile_expr<'a>(
         ast::Expr::Struct(ref struct_expr) => compile_struct_expr(struct_expr, scope, cur_frag),
         ast::Expr::Tuple(ref elements) => compile_tuple_expr(elements, scope, cur_frag),
         ast::Expr::Array(ref array_expr) => compile_array_expr(array_expr, scope, cur_frag),
+        ast::Expr::Cast { ref expr, ref ty } => {
+            let expr = compile_expr(expr, scope, cur_frag);
+            let target_ty = Type::from(ty);
+            if scope.size_of(&expr.ty) != scope.size_of(&target_ty) {
+                panic!("cannot cast `{}` to `{}`", expr.ty, target_ty);
+            }
+            Typed::new(expr.value, target_ty)
+        }
     }
 }
 
@@ -883,6 +935,7 @@ impl<'a> GlobalState<'a> {
     fn size_of(&self, ty: &Type) -> usize {
         match ty {
             Type::Usize => 1,
+            Type::Char => 1,
             Type::Bool => 1,
             Type::Str => panic!("cannot get size of unsized type `str`"),
             Type::Tuple(tys) => tys.iter().map(|ty| self.size_of(ty)).sum(),
@@ -1008,7 +1061,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                             panic!("variable `{name}` needs a type annotation or a value")
                         }
                         (Some(ty), Some(value)) => {
-                            compile_expr_and_push(value, scope, &mut cur_frag).expect(&ty);
+                            compile_expr_and_push(value, scope, &mut cur_frag).expect(&ty, name);
                             ty
                         }
                         (Some(ty), None) => {
@@ -1029,36 +1082,19 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                 ref place,
                 ref value,
                 mode,
-            } => match (mode, value) {
-                (
-                    ast::AssignMode::Replace,
-                    ast::Expr::Call(ast::CallExpr {
-                        func,
-                        bang: true,
-                        args,
-                    }),
-                ) if func == "read_char" && args.is_empty() => {
-                    // optimization for reading a character into an existing location
-                    let dst = compile_place(place, true, scope, &mut cur_frag).expect(&Type::Usize);
-                    scope.global.frags[cur_frag].push(ir::Instruction::Input { dst });
-                }
-                _ => {
-                    let src = compile_expr_and_push(value, scope, &mut cur_frag);
-                    let dst = compile_place(place, true, scope, &mut cur_frag);
-                    if src.ty != dst.ty {
-                        panic!("expected `{}`, found `{}`", dst.ty, src.ty);
-                    }
-                    compile_move(
-                        dst.value,
-                        ir::Value::At(ir::Place::Direct(src.value)),
-                        compile_store_mode(mode),
-                        &src.ty,
-                        scope,
-                        cur_frag,
-                    );
-                    scope.frame_offset = prev_frame_offset;
-                }
-            },
+            } => {
+                let src = compile_expr_and_push(value, scope, &mut cur_frag);
+                let dst = compile_place(place, true, scope, &mut cur_frag);
+                compile_move(
+                    dst.value,
+                    ir::Value::At(ir::Place::Direct(src.expect(&dst.ty, "assignment"))),
+                    compile_store_mode(mode),
+                    &dst.ty,
+                    scope,
+                    cur_frag,
+                );
+                scope.frame_offset = prev_frame_offset;
+            }
             ast::Statement::Loop(ref body) => {
                 let after_loop = scope.new_frag();
                 let loop_start = scope.global.frags.len();
@@ -1091,32 +1127,62 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                 cur_frag = EXIT_FRAG;
                 break;
             }
-            ast::Statement::Match { ref cond, ref arms } => {
+            ast::Statement::If {
+                ref cond,
+                ref true_branch,
+                ref false_branch,
+            } => {
+                match compile_expr(cond, scope, &mut cur_frag).expect(&Type::Bool, "if condition") {
+                    ir::Value::At(place) => {
+                        let true_block = compile_block(true_branch, scope);
+                        let false_block = compile_block(false_branch, scope);
+
+                        scope.global.frags[cur_frag].extend([ir::Instruction::Switch {
+                            cond: place,
+                            cases: vec![goto(false_block.start, scope.frame_call_offset).to_vec()],
+                            default: goto(true_block.start, scope.frame_call_offset).to_vec(),
+                        }]);
+
+                        cur_frag = scope.new_frag();
+                        for block in [true_block, false_block] {
+                            scope.global.frags[block.end]
+                                .extend(goto(cur_frag, scope.frame_call_offset));
+                        }
+                    }
+                    ir::Value::Immediate(value) => execute_block(
+                        if value == 0 {
+                            false_branch
+                        } else {
+                            true_branch
+                        },
+                        scope,
+                        &mut cur_frag,
+                    ),
+                };
+            }
+            ast::Statement::Match {
+                scrutinee: ref cond,
+                ref arms,
+            } => {
+                let cond = compile_expr(cond, scope, &mut cur_frag);
+
                 let mut ordered_arms = BTreeMap::new();
                 let mut default_body = None;
-                let mut pat_ty = None;
 
                 for (pat, body) in arms {
                     let body = body.as_slice();
-                    let (ty, value) = match *pat {
-                        ast::Pattern::Int(value) => (Type::Usize, value),
-                        ast::Pattern::Bool(value) => (Type::Bool, value as usize),
+                    let pat = match *pat {
+                        ast::Pattern::Int(value) => Typed::new(value, Type::Usize),
+                        ast::Pattern::Char(value) => Typed::new(value as usize, Type::Char),
+                        ast::Pattern::Bool(value) => Typed::new(value as usize, Type::Bool),
                         ast::Pattern::Wildcard => {
                             default_body = Some(body);
                             break;
                         }
                     };
-                    if let Some(ref pat_ty) = pat_ty {
-                        if pat_ty != &ty {
-                            panic!(
-                                "mismatched match pattern types: expected `{}`, found `{}`",
-                                pat_ty, ty
-                            );
-                        }
-                    } else {
-                        pat_ty = Some(ty);
-                    }
-                    ordered_arms.entry(value).or_insert(body);
+                    ordered_arms
+                        .entry(pat.expect(&cond.ty, "match pattern"))
+                        .or_insert(body);
                 }
 
                 let default_body = default_body.unwrap_or_default();
@@ -1126,9 +1192,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                     continue;
                 };
 
-                let pat_ty = pat_ty.expect("existence of at least one arm implies pat_ty is set");
-
-                match compile_expr(cond, scope, &mut cur_frag).expect(&pat_ty) {
+                match cond.value {
                     ir::Value::At(place) => {
                         let arm_blocks = (0..=last_arm)
                             .map(|value| {
@@ -1162,7 +1226,8 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
             }
             ast::Statement::Block(ref body) => execute_block(body, scope, &mut cur_frag),
             ast::Statement::Return(ref value) => {
-                let src = compile_expr(value, scope, &mut cur_frag).expect(&scope.func_def.ret_ty);
+                let src = compile_expr(value, scope, &mut cur_frag)
+                    .expect(&scope.func_def.ret_ty, "return value");
                 compile_move(
                     ir::Place::Direct(ir::DirectPlace::StackFrame { offset: 0 }),
                     src,
@@ -1247,6 +1312,7 @@ static STD: LazyLock<ast::Ast> = LazyLock::new(|| {
 #[must_use]
 enum Type<'a> {
     Usize,
+    Char,
     Bool,
     Str,
     Tuple(Vec<Type<'a>>),
@@ -1265,6 +1331,7 @@ impl std::fmt::Display for Type<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
             Type::Usize => write!(f, "usize"),
+            Type::Char => write!(f, "char"),
             Type::Bool => write!(f, "bool"),
             Type::Str => write!(f, "str"),
             Type::Tuple(ref tys) => {
@@ -1295,12 +1362,12 @@ impl std::fmt::Display for Type<'_> {
 }
 
 static PRIMITIVE_TYPES: LazyLock<BTreeMap<&str, Type<'static>>> = LazyLock::new(|| {
-    [
+    BTreeMap::from([
         ("usize", Type::Usize),
+        ("char", Type::Char),
         ("bool", Type::Bool),
         ("str", Type::Str),
-    ]
-    .into()
+    ])
 });
 
 impl<'a> From<&'a ast::Type> for Type<'a> {
@@ -1308,16 +1375,16 @@ impl<'a> From<&'a ast::Type> for Type<'a> {
         match *ty {
             ast::Type::Tuple(ref tys) => Type::Tuple(tys.iter().map(Type::from).collect()),
             ast::Type::Array { ref ty, len } => Type::Array {
-                ty: Box::new(Type::from(ty.as_ref())),
+                ty: Box::new(Type::from(&**ty)),
                 len,
             },
             ast::Type::Named(ref name) => match PRIMITIVE_TYPES.get(&**name) {
-                Some(ty) => ty.clone(),
+                Some(ty) => ty.to_owned(),
                 None => Type::Named(name),
             },
             ast::Type::Ref { mutable, ref ty } => Type::Ref {
                 mutable,
-                ty: Box::new(Type::from(ty.as_ref())),
+                ty: Box::new(Type::from(&**ty)),
             },
         }
     }

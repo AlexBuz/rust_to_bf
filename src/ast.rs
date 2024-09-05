@@ -44,6 +44,7 @@ pub enum ArrayExpr {
 #[derive(Debug, Clone)]
 pub enum Expr {
     Int(usize),
+    Char(char),
     Bool(bool),
     String(String),
     Place(Place),
@@ -52,6 +53,7 @@ pub enum Expr {
     Struct(StructExpr),
     Tuple(Vec<Expr>),
     Array(ArrayExpr),
+    Cast { expr: Box<Expr>, ty: Type },
 }
 
 impl Default for Expr {
@@ -67,9 +69,10 @@ pub enum AssignMode {
     Replace,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Pattern {
     Int(usize),
+    Char(char),
     Bool(bool),
     Wildcard,
 }
@@ -90,8 +93,13 @@ pub enum Statement {
     Loop(Vec<Statement>),
     Continue,
     Break,
-    Match {
+    If {
         cond: Expr,
+        true_branch: Vec<Statement>,
+        false_branch: Vec<Statement>,
+    },
+    Match {
+        scrutinee: Expr,
         arms: Vec<(Pattern, Vec<Statement>)>,
     },
     Block(Vec<Statement>),
