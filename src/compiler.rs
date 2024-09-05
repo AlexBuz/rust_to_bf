@@ -23,7 +23,7 @@ impl<'a, T> Typed<'a, T> {
         Self { value, ty }
     }
 
-    fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Typed<'a, U> {
+    fn map<U>(self, f: impl FnOnce(T) -> U) -> Typed<'a, U> {
         Typed {
             value: f(self.value),
             ty: self.ty,
@@ -31,10 +31,11 @@ impl<'a, T> Typed<'a, T> {
     }
 
     fn expect_ty(self, expected_ty: &Type<'a>, context: &str) -> T {
-        if self.ty != *expected_ty {
+        if self.ty.can_coerce_to(expected_ty) {
+            self.value
+        } else {
             panic!("{context}: expected `{expected_ty}`, found `{}`", self.ty);
         }
-        self.value
     }
 
     fn expect_ref(self, expected_ty: &Type<'a>, context: &str) -> T {
@@ -1343,6 +1344,22 @@ enum Type<'a> {
 impl Type<'_> {
     const fn unit() -> Self {
         Type::Tuple(vec![])
+    }
+
+    fn can_coerce_to(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Type::Ref {
+                    mutable: mutable1,
+                    ty: self_ty,
+                },
+                Type::Ref {
+                    mutable: mutable2,
+                    ty: ty2,
+                },
+            ) => self_ty == ty2 && mutable1 >= mutable2,
+            _ => self == other,
+        }
     }
 }
 
