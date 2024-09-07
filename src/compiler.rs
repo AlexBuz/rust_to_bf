@@ -695,10 +695,11 @@ fn compile_index<'a>(
     let Type::Array { ty: elem_ty, .. } = base.ty else {
         panic!("cannot index into value of type `{}`", base.ty);
     };
-    let index = compile_expr(index, scope, cur_frag).expect_ty(&Type::Usize, "array index");
     let elem_size = scope.size_of(&elem_ty);
+    scope.frame_offset += elem_size;
+    let index = compile_expr(index, scope, cur_frag).expect_ty(&Type::Usize, "array index");
     let address = ir::DirectPlace::StackFrame {
-        offset: scope.frame_offset + elem_size,
+        offset: scope.frame_offset,
     };
     scope.global.frags[*cur_frag].extend([
         ir::Instruction::LoadRef {
