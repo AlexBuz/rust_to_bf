@@ -1,6 +1,6 @@
 use {
     crate::{ast, ir},
-    std::{cmp::Ordering::*, collections::BTreeMap, sync::LazyLock},
+    std::{cmp::Ordering, collections::BTreeMap, sync::LazyLock},
 };
 
 #[derive(Debug, Clone)]
@@ -71,7 +71,7 @@ fn stack_value_at(offset: usize) -> ir::Value {
     ir::Value::At(ir::Place::Direct(ir::DirectPlace::StackFrame { offset }))
 }
 
-static MACROS: &[&str] = &[
+static MACRO_NAMES: &[&str] = &[
     "read_char",
     "print_char",
     "print_str",
@@ -93,11 +93,11 @@ fn compile_macro_call<'a>(
             if !args.is_empty() {
                 panic!("`{name}` does not take any arguments");
             }
-            scope.global.frags[*cur_frag].extend([ir::Instruction::Input {
+            scope.global.frags[*cur_frag].push(ir::Instruction::Input {
                 dst: ir::Place::Direct(ir::DirectPlace::StackFrame {
                     offset: scope.frame_offset,
                 }),
-            }]);
+            });
             scope.frame_offset += 1;
             Typed::new(stack_value_at(orig_frame_offset), Type::Char)
         }
@@ -137,9 +137,9 @@ fn compile_macro_call<'a>(
 
                         compile_expr_and_push(arg, scope, cur_frag).expect_ref(&Type::Str, name);
 
-                        scope.global.frags[*cur_frag].extend([ir::Instruction::SaveFrame {
+                        scope.global.frags[*cur_frag].push(ir::Instruction::SaveFrame {
                             size: scope.frame_offset - 1,
-                        }]);
+                        });
                         scope.frame_offset = orig_frame_offset;
 
                         *cur_frag = return_frag;
@@ -242,7 +242,7 @@ fn compile_macro_call<'a>(
             let size = scope.size_of(&lhs.ty);
             match size {
                 0 => return Typed::new(ir::Value::Immediate(if_same), Type::Bool),
-                1 => (),
+                1 => {}
                 2.. => todo!("comparison of large types"),
             }
             match rhs.value {
@@ -261,7 +261,7 @@ fn compile_macro_call<'a>(
                     })
                 }
             }
-            scope.global.frags[*cur_frag].extend([ir::Instruction::Switch {
+            scope.global.frags[*cur_frag].push(ir::Instruction::Switch {
                 cond: ir::Place::Direct(lhs.value),
                 cases: vec![vec![ir::Instruction::StoreImm {
                     dst: ir::Place::Direct(lhs.value),
@@ -273,7 +273,7 @@ fn compile_macro_call<'a>(
                     value: if_diff,
                     store_mode: ir::StoreMode::Replace,
                 }],
-            }]);
+            });
             scope.frame_offset = orig_frame_offset + size;
             Typed::new(stack_value_at(orig_frame_offset), Type::Bool)
         }
@@ -293,11 +293,11 @@ fn compile_macro_call<'a>(
                 _ => unreachable!("the only short-circuiting operators are `&&` and `||`"),
             };
 
-            scope.global.frags[*cur_frag].extend([ir::Instruction::Switch {
+            scope.global.frags[*cur_frag].push(ir::Instruction::Switch {
                 cond: ir::Place::Direct(lhs),
                 cases: vec![goto(false_circuit, scope.frame_call_offset).to_vec()],
                 default: goto(true_circuit, scope.frame_call_offset).to_vec(),
-            }]);
+            });
 
             *cur_frag = long_circuit;
             scope.frame_offset -= 1;
@@ -440,12 +440,12 @@ fn compile_struct_expr<'a>(
             panic!("field `{}` specified more than once", field.name);
         };
         match scope.frame_offset.cmp(&field_info.frame_offset) {
-            Less | Equal => {
+            Ordering::Less | Ordering::Equal => {
                 scope.frame_offset = field_info.frame_offset;
                 compile_expr_and_push(&field.value, scope, cur_frag)
                     .expect_ty(field_info.ty, &field.name);
             }
-            Greater => {
+            Ordering::Greater => {
                 let prev_frame_offset = scope.frame_offset;
                 compile_expr_and_push(&field.value, scope, cur_frag)
                     .expect_ty(field_info.ty, &field.name);
@@ -913,11 +913,11 @@ fn compile_single_move(
 ) {
     match src {
         ir::Value::Immediate(value) => {
-            cur_frag.extend([ir::Instruction::StoreImm {
+            cur_frag.push(ir::Instruction::StoreImm {
                 dst,
                 value: value * multiplier,
                 store_mode,
-            }]);
+            });
         }
         ir::Value::At(src) => {
             cur_frag.extend([
@@ -1054,7 +1054,7 @@ impl<'a, 'b> Scope<'a, 'b> {
 
     fn shrink_frame(&mut self, target_frame_offset: usize) {
         match target_frame_offset.cmp(&self.frame_offset) {
-            Less => {
+            Ordering::Less => {
                 self.vars.truncate(
                     self.vars
                         .iter()
@@ -1065,8 +1065,8 @@ impl<'a, 'b> Scope<'a, 'b> {
                 );
                 self.frame_offset = target_frame_offset;
             }
-            Equal => {}
-            Greater => unreachable!("cannot shrink frame to a larger size"),
+            Ordering::Equal => {}
+            Ordering::Greater => unreachable!("cannot shrink frame to a larger size"),
         }
     }
 
@@ -1155,7 +1155,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                         "cannot assign value of type `{}` to immutable place",
                         typed_dst.ty
                     ),
-                    Mutability::Mutable => (),
+                    Mutability::Mutable => {}
                 }
                 compile_move(
                     typed_dst.value.place,
@@ -1209,11 +1209,11 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                         let true_block = compile_block(true_branch, scope);
                         let false_block = compile_block(false_branch, scope);
 
-                        scope.global.frags[cur_frag].extend([ir::Instruction::Switch {
+                        scope.global.frags[cur_frag].push(ir::Instruction::Switch {
                             cond: place,
                             cases: vec![goto(false_block.start, scope.frame_call_offset).to_vec()],
                             default: goto(true_block.start, scope.frame_call_offset).to_vec(),
-                        }]);
+                        });
 
                         cur_frag = scope.new_frag();
                         for block in [true_block, false_block] {
@@ -1275,14 +1275,14 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                             })
                             .collect::<Vec<_>>();
                         let default_block = compile_block(default_body, scope);
-                        scope.global.frags[cur_frag].extend([ir::Instruction::Switch {
+                        scope.global.frags[cur_frag].push(ir::Instruction::Switch {
                             cond: place,
                             cases: arm_blocks
                                 .iter()
                                 .map(|block| goto(block.start, scope.frame_call_offset).to_vec())
                                 .collect(),
                             default: goto(default_block.start, scope.frame_call_offset).to_vec(),
-                        }]);
+                        });
                         cur_frag = scope.new_frag();
                         for block in arm_blocks.into_iter().chain([default_block]) {
                             scope.global.frags[block.end]
@@ -1332,7 +1332,7 @@ fn compile_func<'a>(name: &'a str, global_state: &mut GlobalState<'a>) -> FragId
     }
 
     let func_def = global_state.func_defs.get(name).unwrap_or_else(|| {
-        if MACROS.contains(&name) {
+        if MACRO_NAMES.contains(&name) {
             panic!("macro `{name}` must be called with `!`");
         } else {
             panic!("function `{name}` not defined");
