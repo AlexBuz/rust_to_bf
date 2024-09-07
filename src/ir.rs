@@ -240,7 +240,11 @@ impl Instruction {
                 std::io::stdout().flush().unwrap();
                 let mut stdin = std::io::stdin().lock();
                 let mut buf = [0u8];
-                stdin.read_exact(&mut buf).unwrap();
+                if let Err(e) = stdin.read_exact(&mut buf) {
+                    let std::io::ErrorKind::UnexpectedEof = e.kind() else {
+                        panic!("error reading from stdin: {e}");
+                    };
+                }
                 *dst.resolve(state) = usize::from(buf[0]);
             }
             Instruction::Output { src } => {
