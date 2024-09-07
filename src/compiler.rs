@@ -538,21 +538,48 @@ fn compile_array_expr<'a>(
     )
 }
 
-fn compile_var_access<'a>(
-    name: &'a str,
-    mutating: bool,
-    scope: &Scope<'a, '_>,
-) -> Typed<'a, ir::Place> {
+#[derive(Debug, Clone, Copy)]
+enum Mutability {
+    Immutable,
+    MutableThroughRef,
+    Mutable,
+}
+
+impl Mutability {
+    fn of_var(mutable: bool) -> Self {
+        if mutable {
+            Self::Mutable
+        } else {
+            Self::MutableThroughRef
+        }
+    }
+
+    fn through_ref(self, mutable: bool) -> Self {
+        if mutable && matches!(self, Self::Mutable | Self::MutableThroughRef) {
+            Self::Mutable
+        } else {
+            Self::Immutable
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PlaceMut {
+    place: ir::Place,
+    mutability: Mutability,
+}
+
+fn compile_var_access<'a>(name: &'a str, scope: &Scope<'a, '_>) -> Typed<'a, PlaceMut> {
     let Some(var) = scope.vars.iter().rev().find(|var| var.name == name) else {
         panic!("variable `{name}` not found");
     };
-    if mutating && !var.mutable {
-        panic!("variable `{name}` is not mutable");
-    }
     Typed::new(
-        ir::Place::Direct(ir::DirectPlace::StackFrame {
-            offset: var.frame_offset,
-        }),
+        PlaceMut {
+            place: ir::Place::Direct(ir::DirectPlace::StackFrame {
+                offset: var.frame_offset,
+            }),
+            mutability: Mutability::of_var(var.mutable),
+        },
         var.ty.clone(),
     )
 }
@@ -560,31 +587,27 @@ fn compile_var_access<'a>(
 fn compile_field_access<'a>(
     base: &'a ast::Place,
     field_name: &'a str,
-    mutating: bool,
     scope: &mut Scope<'a, '_>,
     cur_frag: &mut FragId,
-) -> Typed<'a, ir::Place> {
-    let mut base = compile_place(base, mutating, scope, cur_frag);
-    while let Type::Ref { .. } = base.ty {
-        base = compile_deref(base, mutating, scope, *cur_frag);
+) -> Typed<'a, PlaceMut> {
+    let mut base = compile_place(base, scope, cur_frag);
+    while base.ty.is_ref() {
+        base = compile_deref(base, scope, *cur_frag);
     }
-    let mut found_field = None;
-    match &base.ty {
-        Type::Tuple(tys) => {
-            if let Ok(index) = field_name.parse() {
-                if let Some(ty) = tys.get(index) {
-                    found_field = Some(Typed::new(
-                        tys[..index].iter().map(|ty| scope.size_of(ty)).sum(),
-                        ty.to_owned(),
-                    ));
-                }
-            }
-        }
+    let found_field = match &base.ty {
+        Type::Tuple(tys) => field_name.parse().ok().and_then(|index| {
+            tys.get(index).map(|ty| {
+                Typed::new(
+                    tys[..index].iter().map(|ty| scope.size_of(ty)).sum(),
+                    ty.to_owned(),
+                )
+            })
+        }),
         Type::Named(ty_name) => {
             let Some(struct_def) = scope.global.struct_defs.get(ty_name) else {
                 panic!("type `{ty_name}` not found");
             };
-            found_field = struct_def
+            struct_def
                 .fields
                 .iter()
                 .enumerate()
@@ -598,41 +621,41 @@ fn compile_field_access<'a>(
                             field.ty.to_owned(),
                         )
                     })
-                });
+                })
         }
-        _ => {}
-    }
+        _ => None,
+    };
     let Some(Typed { value: offset, ty }) = found_field else {
         panic!("no field `{}` on type `{}`", field_name, base.ty);
     };
     if offset > 0 {
         let size = scope.size_of(&ty);
         own_place(
-            &mut base.value,
+            &mut base.value.place,
             &mut scope.global.frags[*cur_frag],
             scope.frame_offset + size,
         );
-        increment_place(&mut base.value, &mut scope.global.frags[*cur_frag], offset);
+        increment_place(
+            &mut base.value.place,
+            &mut scope.global.frags[*cur_frag],
+            offset,
+        );
     }
     Typed::new(base.value, ty)
 }
 
 fn compile_deref<'a>(
-    place: Typed<'a, ir::Place>,
-    mutating: bool,
+    place: Typed<'a, PlaceMut>,
     scope: &mut Scope<'a, '_>,
     cur_frag: FragId,
-) -> Typed<'a, ir::Place> {
+) -> Typed<'a, PlaceMut> {
     match place {
         Typed {
             ty: Type::Ref { mutable, ty },
             value,
-        } => {
-            if mutating && !mutable {
-                panic!("cannot mutate value of type `{ty}` through an immutable reference");
-            }
-            Typed::new(
-                match value {
+        } => Typed::new(
+            PlaceMut {
+                place: match value.place {
                     ir::Place::Direct(address) => {
                         ir::Place::Indirect(ir::IndirectPlace::Deref { address })
                     }
@@ -640,7 +663,7 @@ fn compile_deref<'a>(
                         let offset = scope.frame_offset + scope.size_of(&ty);
                         compile_move(
                             ir::Place::Direct(ir::DirectPlace::StackFrame { offset }),
-                            ir::Value::At(value),
+                            ir::Value::At(value.place),
                             ir::StoreMode::Replace,
                             &ty,
                             scope,
@@ -651,9 +674,10 @@ fn compile_deref<'a>(
                         })
                     }
                 },
-                *ty,
-            )
-        }
+                mutability: place.value.mutability.through_ref(mutable),
+            },
+            *ty,
+        ),
         Typed { ty, .. } => panic!("cannot dereference value of type `{ty}`"),
     }
 }
@@ -661,13 +685,12 @@ fn compile_deref<'a>(
 fn compile_index<'a>(
     base: &'a ast::Place,
     index: &'a ast::Expr,
-    mutating: bool,
     scope: &mut Scope<'a, '_>,
     cur_frag: &mut FragId,
-) -> Typed<'a, ir::Place> {
-    let mut base = compile_place(base, mutating, scope, cur_frag);
-    while let Type::Ref { .. } = base.ty {
-        base = compile_deref(base, mutating, scope, *cur_frag);
+) -> Typed<'a, PlaceMut> {
+    let mut base = compile_place(base, scope, cur_frag);
+    while base.ty.is_ref() {
+        base = compile_deref(base, scope, *cur_frag);
     }
     let Type::Array { ty: elem_ty, .. } = base.ty else {
         panic!("cannot index into value of type `{}`", base.ty);
@@ -678,7 +701,9 @@ fn compile_index<'a>(
         offset: scope.frame_offset + elem_size,
     };
     scope.global.frags[*cur_frag].extend([
-        ir::Instruction::LoadRef { src: base.value },
+        ir::Instruction::LoadRef {
+            src: base.value.place,
+        },
         ir::Instruction::Store {
             dst: ir::Place::Direct(address),
             store_mode: ir::StoreMode::Replace,
@@ -692,32 +717,36 @@ fn compile_index<'a>(
         &mut scope.global.frags[*cur_frag],
     );
     Typed::new(
-        ir::Place::Indirect(ir::IndirectPlace::Deref { address }),
+        PlaceMut {
+            place: ir::Place::Indirect(ir::IndirectPlace::Deref { address }),
+            mutability: base.value.mutability,
+        },
         *elem_ty,
     )
 }
 
 fn compile_place<'a>(
     place: &'a ast::Place,
-    mutating: bool,
     scope: &mut Scope<'a, '_>,
     cur_frag: &mut FragId,
-) -> Typed<'a, ir::Place> {
+) -> Typed<'a, PlaceMut> {
     let orig_frame_offset = scope.frame_offset;
     let result = match place {
-        ast::Place::Var(ident) => compile_var_access(ident, mutating, scope),
+        ast::Place::Var(ident) => compile_var_access(ident, scope),
         ast::Place::FieldAccess { base, field } => {
-            compile_field_access(base, field, mutating, scope, cur_frag)
+            compile_field_access(base, field, scope, cur_frag)
         }
-        ast::Place::Index { base, index } => compile_index(base, index, mutating, scope, cur_frag),
+        ast::Place::Index { base, index } => compile_index(base, index, scope, cur_frag),
         ast::Place::Deref(expr) => compile_deref(
-            compile_expr(expr, scope, cur_frag).map(|value| match value {
-                ir::Value::At(place) => place,
-                ir::Value::Immediate(address) => {
-                    ir::Place::Direct(ir::DirectPlace::Address(address))
-                }
+            compile_expr(expr, scope, cur_frag).map(|value| PlaceMut {
+                place: match value {
+                    ir::Value::At(place) => place,
+                    ir::Value::Immediate(address) => {
+                        ir::Place::Direct(ir::DirectPlace::Address(address))
+                    }
+                },
+                mutability: Mutability::MutableThroughRef,
             }),
-            mutating,
             scope,
             *cur_frag,
         ),
@@ -732,9 +761,17 @@ fn compile_ref<'a>(
     scope: &mut Scope<'a, '_>,
     cur_frag: &mut FragId,
 ) -> Typed<'a, ir::Value> {
-    let place = compile_place(place, mutable, scope, cur_frag);
+    let place = compile_place(place, scope, cur_frag);
+    if mutable && !matches!(place.value.mutability, Mutability::Mutable) {
+        panic!(
+            "cannot take mutable reference to immutable place of type `{}`",
+            place.ty
+        );
+    }
     scope.global.frags[*cur_frag].extend([
-        ir::Instruction::LoadRef { src: place.value },
+        ir::Instruction::LoadRef {
+            src: place.value.place,
+        },
         ir::Instruction::Store {
             dst: ir::Place::Direct(ir::DirectPlace::StackFrame {
                 offset: scope.frame_offset,
@@ -782,9 +819,9 @@ fn compile_expr<'a>(
         ast::Expr::Char(c) => Typed::new(ir::Value::Immediate(c as usize), Type::Char),
         ast::Expr::Bool(b) => Typed::new(ir::Value::Immediate(b as usize), Type::Bool),
         ast::Expr::Str(ref s) => compile_str(s, scope),
-        ast::Expr::Place(ref place) => {
-            compile_place(place, false, scope, cur_frag).map(ir::Value::At)
-        }
+        ast::Expr::Place(ref place) => compile_place(place, scope, cur_frag)
+            .map(|place| place.place)
+            .map(ir::Value::At),
         ast::Expr::Ref { mutable, ref place } => compile_ref(mutable, place, scope, cur_frag),
         ast::Expr::Call(ref call_expr) => compile_call(call_expr, scope, cur_frag),
         ast::Expr::Struct(ref struct_expr) => compile_struct_expr(struct_expr, scope, cur_frag),
@@ -1105,13 +1142,25 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                 ref value,
                 mode,
             } => {
-                let src = compile_expr_and_push(value, scope, &mut cur_frag);
-                let dst = compile_place(place, true, scope, &mut cur_frag);
+                let typed_src = compile_expr_and_push(value, scope, &mut cur_frag);
+                let typed_dst = compile_place(place, scope, &mut cur_frag);
+                let src = typed_src.expect_ty(&typed_dst.ty, "assignment");
+                match typed_dst.value.mutability {
+                    Mutability::Immutable => panic!(
+                        "cannot assign value of type `{}` through immutable reference",
+                        typed_dst.ty
+                    ),
+                    Mutability::MutableThroughRef => panic!(
+                        "cannot assign value of type `{}` to immutable place",
+                        typed_dst.ty
+                    ),
+                    Mutability::Mutable => (),
+                }
                 compile_move(
-                    dst.value,
-                    ir::Value::At(ir::Place::Direct(src.expect_ty(&dst.ty, "assignment"))),
+                    typed_dst.value.place,
+                    ir::Value::At(ir::Place::Direct(src)),
                     compile_store_mode(mode),
-                    &dst.ty,
+                    &typed_dst.ty,
                     scope,
                     cur_frag,
                 );
@@ -1360,6 +1409,10 @@ impl Type<'_> {
             ) => self_ty == ty2 && mutable1 >= mutable2,
             _ => self == other,
         }
+    }
+
+    fn is_ref(&self) -> bool {
+        matches!(self, Type::Ref { .. })
     }
 }
 
