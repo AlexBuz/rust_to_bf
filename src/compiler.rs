@@ -79,6 +79,7 @@ static MACRO_NAMES: &[&str] = &[
     "println",
     "exit",
     "panic",
+    "boxed",
 ];
 
 fn compile_macro_call<'a>(
@@ -224,6 +225,57 @@ fn compile_macro_call<'a>(
                 compile_macro_call("println", args, scope, cur_frag).expect_ty(&Type::unit(), name);
             }
             compile_macro_call("exit", &[], scope, cur_frag)
+        }
+        "boxed" => {
+            let [arg] = args else {
+                panic!("`{name}` requires exactly 1 argument");
+            };
+
+            // leave space for the address
+            scope.frame_offset += 1;
+            let arg = compile_expr(arg, scope, cur_frag);
+            let size = scope.size_of(&arg.ty);
+
+            // store the value on the heap
+            compile_move(
+                ir::Place::Indirect(ir::IndirectPlace::Deref {
+                    address: ir::DirectPlace::Address(0),
+                }),
+                arg.value,
+                ir::StoreMode::Add,
+                &arg.ty,
+                scope,
+                *cur_frag,
+            );
+
+            // store the address on the stack
+            compile_single_move(
+                ir::Place::Direct(ir::DirectPlace::StackFrame {
+                    offset: orig_frame_offset,
+                }),
+                ir::Value::At(ir::Place::Direct(ir::DirectPlace::Address(0))),
+                ir::StoreMode::Replace,
+                1,
+                &mut scope.global.frags[*cur_frag],
+            );
+
+            // increment the next free address
+            compile_single_move(
+                ir::Place::Direct(ir::DirectPlace::Address(0)),
+                ir::Value::Immediate(size),
+                ir::StoreMode::Add,
+                2,
+                &mut scope.global.frags[*cur_frag],
+            );
+
+            scope.frame_offset = orig_frame_offset + 1;
+            Typed::new(
+                stack_value_at(orig_frame_offset),
+                Type::Ref {
+                    mutable: true,
+                    ty: Box::new(arg.ty),
+                },
+            )
         }
         "==" | "!=" => {
             let [lhs, rhs] = args else {
@@ -1562,6 +1614,11 @@ pub fn compile(ast: &ast::Ast) -> ir::Program {
 
     ir::Program {
         instructions: vec![
+            ir::Instruction::StoreImm {
+                dst: ir::Place::Direct(ir::DirectPlace::Address(0)),
+                value: 2, // next free address (for boxed values)
+                store_mode: ir::StoreMode::Add,
+            },
             ir::Instruction::SaveFrame { size: 1 },
             ir::Instruction::StoreImm {
                 dst: ir::Place::Direct(ir::DirectPlace::StackFrame { offset: 0 }),
