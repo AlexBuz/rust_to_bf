@@ -80,6 +80,7 @@ static MACRO_NAMES: &[&str] = &[
     "exit",
     "panic",
     "boxed",
+    "malloc",
 ];
 
 fn compile_macro_call<'a>(
@@ -226,29 +227,13 @@ fn compile_macro_call<'a>(
             }
             compile_macro_call("exit", &[], scope, cur_frag)
         }
-        "boxed" => {
+        "boxed" | "malloc" => {
             let [arg] = args else {
                 panic!("`{name}` requires exactly 1 argument");
             };
 
-            // leave space for the address
-            scope.frame_offset += 1;
-            let arg = compile_expr(arg, scope, cur_frag);
-            let size = scope.size_of(&arg.ty);
-
-            // store the value on the heap
-            compile_move(
-                ir::Place::Indirect(ir::IndirectPlace::Deref {
-                    address: ir::DirectPlace::Address(0),
-                }),
-                arg.value,
-                ir::StoreMode::Add,
-                &arg.ty,
-                scope,
-                *cur_frag,
-            );
-
             // store the address on the stack
+            scope.frame_offset += 1;
             compile_single_move(
                 ir::Place::Direct(ir::DirectPlace::StackFrame {
                     offset: orig_frame_offset,
@@ -259,10 +244,37 @@ fn compile_macro_call<'a>(
                 &mut scope.global.frags[*cur_frag],
             );
 
+            let arg = compile_expr(arg, scope, cur_frag);
+            let (offset, ty) = match name {
+                "boxed" => {
+                    // store the value on the heap
+                    let size = scope.size_of(&arg.ty);
+                    compile_move(
+                        ir::Place::Indirect(ir::IndirectPlace::Deref {
+                            address: ir::DirectPlace::Address(0),
+                        }),
+                        arg.value,
+                        ir::StoreMode::Add,
+                        size,
+                        scope,
+                        *cur_frag,
+                    );
+                    (ir::Value::Immediate(size), arg.ty)
+                }
+                "malloc" => (
+                    arg.expect_ty(&Type::Usize, name),
+                    Type::Array {
+                        len: None,
+                        ty: Box::new(Type::Usize),
+                    },
+                ),
+                _ => unreachable!("the only heap allocation macros are `boxed` and `malloc`"),
+            };
+
             // increment the next free address
             compile_single_move(
                 ir::Place::Direct(ir::DirectPlace::Address(0)),
-                ir::Value::Immediate(size),
+                offset,
                 ir::StoreMode::Add,
                 2,
                 &mut scope.global.frags[*cur_frag],
@@ -273,7 +285,7 @@ fn compile_macro_call<'a>(
                 stack_value_at(orig_frame_offset),
                 Type::Ref {
                     mutable: true,
-                    ty: Box::new(arg.ty),
+                    ty: Box::new(ty),
                 },
             )
         }
@@ -445,15 +457,13 @@ fn compile_struct_expr<'a>(
     scope: &mut Scope<'a, '_>,
     cur_frag: &mut FragId,
 ) -> Typed<'a, ir::Value> {
-    let Some(struct_def) = scope.global.struct_defs.get(&*struct_expr.name) else {
-        panic!("type `{}` not found", struct_expr.name);
-    };
+    let struct_fields = scope.global.iter_fields_of_struct(&struct_expr.name);
 
-    if struct_expr.fields.len() != struct_def.fields.len() {
+    if struct_expr.fields.len() != struct_fields.len() {
         panic!(
             "struct `{}` has {} fields, but {} were provided",
             struct_expr.name,
-            struct_def.fields.len(),
+            struct_fields.len(),
             struct_expr.fields.len()
         );
     }
@@ -465,9 +475,7 @@ fn compile_struct_expr<'a>(
 
     let struct_frame_offset = scope.frame_offset;
 
-    let mut expected_fields: BTreeMap<&str, Option<FieldInfo>> = struct_def
-        .fields
-        .iter()
+    let mut expected_fields: BTreeMap<&str, Option<FieldInfo>> = struct_fields
         .scan(struct_frame_offset, |frame_offset, field| {
             let info = Some((
                 field.name,
@@ -507,7 +515,7 @@ fn compile_struct_expr<'a>(
                     }),
                     stack_value_at(prev_frame_offset),
                     ir::StoreMode::Replace,
-                    field_info.ty,
+                    scope.size_of(field_info.ty),
                     scope,
                     *cur_frag,
                 );
@@ -547,7 +555,7 @@ fn compile_array_expr<'a>(
         stack_value_at(scope.frame_offset),
         match *array_expr {
             ast::ArrayExpr::List(ref elements) => Type::Array {
-                len: elements.len(),
+                len: Some(elements.len()),
                 ty: Box::new(match elements.split_first() {
                     Some((first, rest)) => {
                         let first_ty = compile_expr_and_push(first, scope, cur_frag).ty;
@@ -557,14 +565,14 @@ fn compile_array_expr<'a>(
                         }
                         first_ty
                     }
-                    None => todo!("empty array type inference"),
+                    None => Type::Usize,
                 }),
             },
             ast::ArrayExpr::Repeat { ref value, len } => {
                 let first_elem = compile_expr_and_push(value, scope, cur_frag);
-                let size = scope.size_of(&first_elem.ty);
+                let elem_size = scope.size_of(&first_elem.ty);
                 match len {
-                    0 => scope.frame_offset -= size,
+                    0 => scope.frame_offset -= elem_size,
                     _ => {
                         for _ in 1..len {
                             compile_move(
@@ -573,16 +581,16 @@ fn compile_array_expr<'a>(
                                 }),
                                 ir::Value::At(ir::Place::Direct(first_elem.value)),
                                 ir::StoreMode::Replace,
-                                &first_elem.ty,
+                                elem_size,
                                 scope,
                                 *cur_frag,
                             );
-                            scope.frame_offset += size;
+                            scope.frame_offset += elem_size;
                         }
                     }
                 }
                 Type::Array {
-                    len,
+                    len: Some(len),
                     ty: Box::new(first_elem.ty),
                 }
             }
@@ -643,9 +651,7 @@ fn compile_field_access<'a>(
     cur_frag: &mut FragId,
 ) -> Typed<'a, PlaceMut> {
     let mut base = compile_place(base, scope, cur_frag);
-    while base.ty.is_ref() {
-        base = compile_deref(base, scope, *cur_frag);
-    }
+    base = compile_deref(base, scope, *cur_frag, true);
     let found_field = match &base.ty {
         Type::Tuple(tys) => field_name.parse().ok().and_then(|index| {
             tys.get(index).map(|ty| {
@@ -655,82 +661,92 @@ fn compile_field_access<'a>(
                 )
             })
         }),
-        Type::Named(ty_name) => {
-            let Some(struct_def) = scope.global.struct_defs.get(ty_name) else {
-                panic!("type `{ty_name}` not found");
-            };
-            struct_def
-                .fields
-                .iter()
-                .enumerate()
-                .find_map(|(index, field)| {
-                    (field.name == field_name).then(|| {
-                        Typed::new(
-                            struct_def.fields[..index]
-                                .iter()
-                                .map(|field| scope.size_of(&field.ty))
-                                .sum(),
-                            field.ty.to_owned(),
-                        )
-                    })
-                })
-        }
+        Type::Named(ty_name) => scope
+            .global
+            .iter_fields_of_struct(ty_name)
+            .scan(0, |offset, field| {
+                let field_offset = *offset;
+                *offset += scope.size_of(&field.ty);
+                Some((field, field_offset))
+            })
+            .find_map(|(field, offset)| {
+                (field.name == field_name).then(|| Typed::new(offset, field.ty.clone()))
+            }),
         _ => None,
     };
-    let Some(Typed { value: offset, ty }) = found_field else {
+    let Some(Typed {
+        value: field_offset,
+        ty: field_ty,
+    }) = found_field
+    else {
         panic!("no field `{}` on type `{}`", field_name, base.ty);
     };
-    if offset > 0 {
-        let size = scope.size_of(&ty);
+    if field_offset > 0 {
+        let field_size = scope.size_of(&field_ty);
         own_place(
             &mut base.value.place,
             &mut scope.global.frags[*cur_frag],
-            scope.frame_offset + size,
+            scope.frame_offset + field_size,
         );
         increment_place(
             &mut base.value.place,
             &mut scope.global.frags[*cur_frag],
-            offset,
+            field_offset,
         );
     }
-    Typed::new(base.value, ty)
+    Typed::new(base.value, field_ty)
 }
 
 fn compile_deref<'a>(
     place: Typed<'a, PlaceMut>,
     scope: &mut Scope<'a, '_>,
     cur_frag: FragId,
+    indexing: bool,
 ) -> Typed<'a, PlaceMut> {
-    match place {
-        Typed {
-            ty: Type::Ref { mutable, ty },
-            value,
-        } => Typed::new(
-            PlaceMut {
-                place: match value.place {
-                    ir::Place::Direct(address) => {
-                        ir::Place::Indirect(ir::IndirectPlace::Deref { address })
-                    }
-                    ir::Place::Indirect(_) => {
-                        let offset = scope.frame_offset + scope.size_of(&ty);
-                        compile_move(
-                            ir::Place::Direct(ir::DirectPlace::StackFrame { offset }),
-                            ir::Value::At(value.place),
-                            ir::StoreMode::Replace,
-                            &ty,
-                            scope,
-                            cur_frag,
-                        );
-                        ir::Place::Indirect(ir::IndirectPlace::Deref {
-                            address: ir::DirectPlace::StackFrame { offset },
-                        })
-                    }
-                },
-                mutability: place.value.mutability.through_ref(mutable),
+    let Typed {
+        ty: Type::Ref { mutable, ty },
+        value: PlaceMut { place, mutability },
+    } = place
+    else {
+        if indexing {
+            return place;
+        } else {
+            panic!("cannot dereference value of type `{}`", place.ty);
+        }
+    };
+    let deref = Typed::new(
+        PlaceMut {
+            place: match place {
+                ir::Place::Direct(address) => {
+                    ir::Place::Indirect(ir::IndirectPlace::Deref { address })
+                }
+                ir::Place::Indirect(_) => {
+                    let offset = scope.frame_offset
+                        + if indexing {
+                            scope.indexed_size_of(&ty)
+                        } else {
+                            scope.size_of(&ty)
+                        };
+                    compile_single_move(
+                        ir::Place::Direct(ir::DirectPlace::StackFrame { offset }),
+                        ir::Value::At(place),
+                        ir::StoreMode::Replace,
+                        1,
+                        &mut scope.global.frags[cur_frag],
+                    );
+                    ir::Place::Indirect(ir::IndirectPlace::Deref {
+                        address: ir::DirectPlace::StackFrame { offset },
+                    })
+                }
             },
-            *ty,
-        ),
-        Typed { ty, .. } => panic!("cannot dereference value of type `{ty}`"),
+            mutability: mutability.through_ref(mutable),
+        },
+        *ty,
+    );
+    if indexing {
+        compile_deref(deref, scope, cur_frag, indexing)
+    } else {
+        deref
     }
 }
 
@@ -740,10 +756,8 @@ fn compile_index<'a>(
     scope: &mut Scope<'a, '_>,
     cur_frag: &mut FragId,
 ) -> Typed<'a, PlaceMut> {
-    let mut base = compile_place(base, scope, cur_frag);
-    while base.ty.is_ref() {
-        base = compile_deref(base, scope, *cur_frag);
-    }
+    let base = compile_place(base, scope, cur_frag);
+    let base = compile_deref(base, scope, *cur_frag, true);
     let Type::Array { ty: elem_ty, .. } = base.ty else {
         panic!("cannot index into value of type `{}`", base.ty);
     };
@@ -802,6 +816,7 @@ fn compile_place<'a>(
             }),
             scope,
             *cur_frag,
+            false,
         ),
     };
     scope.frame_offset = orig_frame_offset;
@@ -881,12 +896,17 @@ fn compile_expr<'a>(
         ast::Expr::Tuple(ref elements) => compile_tuple_expr(elements, scope, cur_frag),
         ast::Expr::Array(ref array_expr) => compile_array_expr(array_expr, scope, cur_frag),
         ast::Expr::Cast { ref expr, ref ty } => {
-            let expr = compile_expr(expr, scope, cur_frag);
-            let target_ty = Type::from(ty);
-            if scope.size_of(&expr.ty) != scope.size_of(&target_ty) {
-                panic!("cannot cast `{}` to `{}`", expr.ty, target_ty);
+            let src = compile_expr(expr, scope, cur_frag);
+            let src_size = scope.size_of(&src.ty);
+            let dst_ty = Type::from(ty);
+            let dst_size = scope.size_of(&dst_ty);
+            if src_size != dst_size {
+                panic!(
+                    "cannot cast `{}` to `{}`: size mismatch ({} != {})",
+                    src.ty, dst_ty, src_size, dst_size
+                );
             }
-            Typed::new(expr.value, target_ty)
+            Typed::new(src.value, dst_ty)
         }
     }
 }
@@ -906,7 +926,7 @@ fn compile_expr_and_push<'a>(
             }),
             result.value,
             ir::StoreMode::Replace,
-            &result.ty,
+            scope.size_of(&result.ty),
             scope,
             *cur_frag,
         );
@@ -980,15 +1000,14 @@ fn compile_single_move(
     }
 }
 
-fn compile_move<'a>(
+fn compile_move(
     mut dst: ir::Place,
     src: ir::Value,
     store_mode: ir::StoreMode,
-    ty: &Type<'a>,
-    scope: &mut Scope<'a, '_>,
+    size: usize,
+    scope: &mut Scope,
     cur_frag: FragId,
 ) {
-    let size = scope.size_of(ty);
     let cur_frag = &mut scope.global.frags[cur_frag];
     match size {
         0 => {}
@@ -1050,23 +1069,39 @@ impl<'a> GlobalState<'a> {
         frag_id
     }
 
+    fn iter_fields_of_struct(&self, name: &str) -> impl ExactSizeIterator<Item = &'a Field<'a>> {
+        self.struct_defs
+            .get(name)
+            .unwrap_or_else(|| panic!("struct `{name}` not found"))
+            .fields
+            .iter()
+    }
+
+    fn indexed_size_of(&self, ty: &Type) -> usize {
+        match ty {
+            Type::Array { ty, .. } => self.size_of(ty),
+            Type::Named(name) => self
+                .iter_fields_of_struct(name)
+                .map(|field| self.size_of(&field.ty))
+                .max()
+                .unwrap_or_default(),
+            _ => self.size_of(ty),
+        }
+    }
+
     fn size_of(&self, ty: &Type) -> usize {
         match ty {
-            Type::Usize => 1,
-            Type::Char => 1,
-            Type::Bool => 1,
-            Type::Str => panic!("cannot get size of unsized type `str`"),
+            Type::Usize | Type::Char | Type::Bool | Type::Ref { .. } => 1,
             Type::Tuple(tys) => tys.iter().map(|ty| self.size_of(ty)).sum(),
-            Type::Array { ty, len } => self.size_of(ty) * len,
+            Type::Array { ty, len: Some(len) } => len * self.size_of(ty),
+            Type::Array { ty, len: None } if self.size_of(ty) == 0 => 0,
             Type::Named(name) => self
-                .struct_defs
-                .get(name)
-                .unwrap_or_else(|| panic!("type `{name}` not found"))
-                .fields
-                .iter()
+                .iter_fields_of_struct(name)
                 .map(|field| self.size_of(&field.ty))
                 .sum(),
-            Type::Ref { .. } => 1,
+            Type::Str | Type::Array { len: None, .. } => {
+                panic!("cannot get size of unsized type `{ty}`")
+            }
         }
     }
 }
@@ -1113,7 +1148,7 @@ impl<'a, 'b> Scope<'a, 'b> {
                         .rev()
                         .position(|var| var.frame_offset < target_frame_offset)
                         .map(|pos| self.vars.len() - pos)
-                        .unwrap_or(0),
+                        .unwrap_or_default(),
                 );
                 self.frame_offset = target_frame_offset;
             }
@@ -1132,6 +1167,10 @@ impl<'a, 'b> Scope<'a, 'b> {
         self.global.add_frag(vec![ir::Instruction::RestoreFrame {
             size: self.frame_call_offset,
         }])
+    }
+
+    fn indexed_size_of(&self, ty: &Type) -> usize {
+        self.global.indexed_size_of(ty)
     }
 
     fn size_of(&self, ty: &Type) -> usize {
@@ -1213,7 +1252,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                     typed_dst.value.place,
                     ir::Value::At(ir::Place::Direct(src)),
                     compile_store_mode(mode),
-                    &typed_dst.ty,
+                    scope.size_of(&typed_dst.ty),
                     scope,
                     cur_frag,
                 );
@@ -1356,7 +1395,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
                     ir::Place::Direct(ir::DirectPlace::StackFrame { offset: 0 }),
                     src,
                     ir::StoreMode::Replace,
-                    &scope.func_def.ret_ty,
+                    scope.size_of(&scope.func_def.ret_ty),
                     scope,
                     cur_frag,
                 );
@@ -1383,13 +1422,13 @@ fn compile_func<'a>(name: &'a str, global_state: &mut GlobalState<'a>) -> FragId
         return func_id;
     }
 
-    let func_def = global_state.func_defs.get(name).unwrap_or_else(|| {
+    let Some(func_def) = global_state.func_defs.get(name) else {
         if MACRO_NAMES.contains(&name) {
             panic!("macro `{name}` must be called with `!`");
         } else {
             panic!("function `{name}` not defined");
         }
-    });
+    };
 
     let block_start = global_state.frags.len();
     global_state.func_ids.insert(name, block_start);
@@ -1438,9 +1477,15 @@ enum Type<'a> {
     Bool,
     Str,
     Tuple(Vec<Type<'a>>),
-    Array { ty: Box<Type<'a>>, len: usize },
+    Array {
+        ty: Box<Type<'a>>,
+        len: Option<usize>,
+    },
     Named(&'a str),
-    Ref { mutable: bool, ty: Box<Type<'a>> },
+    Ref {
+        mutable: bool,
+        ty: Box<Type<'a>>,
+    },
 }
 
 impl Type<'_> {
@@ -1462,10 +1507,6 @@ impl Type<'_> {
             ) => self_ty == ty2 && mutable1 >= mutable2,
             _ => self == other,
         }
-    }
-
-    fn is_ref(&self) -> bool {
-        matches!(self, Type::Ref { .. })
     }
 }
 
@@ -1490,7 +1531,10 @@ impl std::fmt::Display for Type<'_> {
                 }
                 write!(f, ")")
             }
-            Type::Array { ref ty, len } => write!(f, "[{}; {}]", ty, len),
+            Type::Array { ref ty, len } => match len {
+                Some(len) => write!(f, "[{}; {}]", ty, len),
+                None => write!(f, "[{}]", ty),
+            },
             Type::Named(name) => write!(f, "{}", name),
             Type::Ref { mutable, ref ty } => {
                 write!(f, "&")?;

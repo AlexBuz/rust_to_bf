@@ -119,7 +119,7 @@ impl From<Statement> for Vec<Statement> {
 #[derive(Debug, Clone)]
 pub enum Type {
     Tuple(Vec<Type>),
-    Array { ty: Box<Type>, len: usize },
+    Array { ty: Box<Type>, len: Option<usize> },
     Named(Ident),
     Ref { mutable: bool, ty: Box<Type> },
     // TODO: support function types
@@ -152,7 +152,10 @@ impl std::fmt::Display for Type {
                 }
                 write!(f, ")")
             }
-            Type::Array { ty, len } => write!(f, "[{}; {}]", ty, len),
+            Type::Array { ty, len } => match len {
+                Some(len) => write!(f, "[{}; {}]", ty, len),
+                None => write!(f, "[{}]", ty),
+            },
             Type::Named(name) => write!(f, "{}", name),
             Type::Ref { mutable, ty } => {
                 write!(f, "&")?;

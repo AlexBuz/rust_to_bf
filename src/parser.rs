@@ -461,7 +461,15 @@ fn type_parser() -> impl Parser<Token, Type, Error = Simple<Token>> + Clone {
             .then(choice((
                 ident_parser().map(Type::Named),
                 tuple_parser(type_parser.clone()).map(Type::Tuple),
-                repeat_parser(type_parser.clone()).map(|(ty, len)| Type::Array { ty, len }),
+                repeat_parser(type_parser.clone())
+                    .map(|(ty, len)| Type::Array { ty, len: Some(len) }),
+                type_parser
+                    .clone()
+                    .delimited_by(just(Token::OpenBracket), just(Token::CloseBracket))
+                    .map(|ty| Type::Array {
+                        ty: Box::new(ty),
+                        len: None,
+                    }),
                 type_parser.delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
             )))
             .foldr(|mutable, ty| Type::Ref {
