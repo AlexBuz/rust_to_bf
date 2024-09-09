@@ -4,33 +4,33 @@ use {
 };
 
 #[derive(Debug, Clone)]
-struct Var<'a> {
+struct Var<'src> {
     frame_offset: usize,
     mutable: bool,
-    name: &'a str,
-    ty: Type<'a>,
+    name: &'src str,
+    ty: Type<'src>,
 }
 
 #[derive(Debug, Clone)]
 #[must_use]
-struct Typed<'a, T> {
+struct Typed<'src, T> {
     value: T,
-    ty: Type<'a>,
+    ty: Type<'src>,
 }
 
-impl<'a, T> Typed<'a, T> {
-    fn new(value: T, ty: Type<'a>) -> Self {
+impl<'src, T> Typed<'src, T> {
+    fn new(value: T, ty: Type<'src>) -> Self {
         Self { value, ty }
     }
 
-    fn map<U>(self, f: impl FnOnce(T) -> U) -> Typed<'a, U> {
+    fn map<U>(self, f: impl FnOnce(T) -> U) -> Typed<'src, U> {
         Typed {
             value: f(self.value),
             ty: self.ty,
         }
     }
 
-    fn expect_ty(self, expected_ty: &Type<'a>, context: &str) -> T {
+    fn expect_ty(self, expected_ty: &Type<'src>, context: &str) -> T {
         if self.ty.can_coerce_to(expected_ty) {
             self.value
         } else {
@@ -38,7 +38,7 @@ impl<'a, T> Typed<'a, T> {
         }
     }
 
-    fn expect_ref(self, expected_ty: &Type<'a>, context: &str) -> T {
+    fn expect_ref(self, expected_ty: &Type<'src>, context: &str) -> T {
         match self.ty {
             Type::Ref { ty, .. } if *ty == *expected_ty => self.value,
             _ => panic!("{context}: expected `&{expected_ty}`, found `{}`", self.ty),
@@ -83,12 +83,12 @@ static MACRO_NAMES: &[&str] = &[
     "malloc",
 ];
 
-fn compile_macro_call<'a>(
+fn compile_macro_call<'src>(
     name: &str,
-    args: &'a [ast::Expr],
-    scope: &mut Scope<'a, '_>,
+    args: &[ast::Expr<'src>],
+    scope: &mut Scope<'src, '_>,
     cur_frag: &mut FragId,
-) -> Typed<'a, ir::Value> {
+) -> Typed<'src, ir::Value> {
     let orig_frame_offset = scope.frame_offset;
     match name {
         "read_char" => {
@@ -121,7 +121,7 @@ fn compile_macro_call<'a>(
             for arg in args {
                 match arg {
                     ast::Expr::Str(s) => {
-                        scope.global.frags[*cur_frag].extend(s.bytes().map(|byte| {
+                        scope.global.frags[*cur_frag].extend(unescape(s).map(|byte| {
                             ir::Instruction::Output {
                                 src: ir::Value::Immediate(byte as usize),
                             }
@@ -154,14 +154,14 @@ fn compile_macro_call<'a>(
             let Some((first_arg, mut args)) = args.split_first() else {
                 panic!("`{name}` requires at least 1 argument");
             };
-            let format_string = match first_arg {
+            let format_str = match first_arg {
                 ast::Expr::Str(s) => s,
                 _ => panic!("first argument to `{name}` must be a string literal"),
             };
-            let mut format_chars = format_string.bytes();
-            while let Some(c) = format_chars.next() {
-                if c == b'%' {
-                    let Some(format_specifier) = format_chars.next() else {
+            let mut format_bytes = unescape(format_str);
+            while let Some(byte) = format_bytes.next() {
+                if byte == b'%' {
+                    let Some(format_specifier) = format_bytes.next() else {
                         panic!("unterminated format specifier");
                     };
                     if format_specifier == b'%' {
@@ -171,7 +171,7 @@ fn compile_macro_call<'a>(
                         continue;
                     }
                     let Some((arg, rest)) = args.split_at_checked(1) else {
-                        panic!("not enough arguments for format string `{format_string}`")
+                        panic!("not enough arguments for format string `{format_str}`")
                     };
                     args = rest;
                     match format_specifier {
@@ -183,13 +183,13 @@ fn compile_macro_call<'a>(
                     .expect_ty(&Type::unit(), name);
                 } else {
                     scope.global.frags[*cur_frag].push(ir::Instruction::Output {
-                        src: ir::Value::Immediate(c as usize),
+                        src: ir::Value::Immediate(byte as usize),
                     });
                 }
             }
             scope.frame_offset = orig_frame_offset;
             if !args.is_empty() {
-                panic!("too many arguments for format string `{format_string}`");
+                panic!("too many arguments for format string `{format_str}`");
             }
             Typed::new(stack_value_at(orig_frame_offset), Type::unit())
         }
@@ -382,12 +382,12 @@ fn compile_macro_call<'a>(
     }
 }
 
-fn compile_func_call<'a>(
-    name: &'a str,
-    args: &'a [ast::Expr],
-    scope: &mut Scope<'a, '_>,
+fn compile_func_call<'src>(
+    name: &'src str,
+    args: &[ast::Expr<'src>],
+    scope: &mut Scope<'src, '_>,
     cur_frag: &mut FragId,
-) -> Typed<'a, ir::Value> {
+) -> Typed<'src, ir::Value> {
     let call_frag = compile_func(name, scope.global);
 
     let func_def = &scope.global.func_defs[name];
@@ -440,24 +440,24 @@ fn compile_func_call<'a>(
     Typed::new(stack_value_at(orig_frame_offset), func_def.ret_ty.clone())
 }
 
-fn compile_call<'a>(
-    call_expr: &'a ast::CallExpr,
-    scope: &mut Scope<'a, '_>,
+fn compile_call<'src>(
+    call_expr: &ast::CallExpr<'src>,
+    scope: &mut Scope<'src, '_>,
     cur_frag: &mut FragId,
-) -> Typed<'a, ir::Value> {
+) -> Typed<'src, ir::Value> {
     if call_expr.bang {
-        compile_macro_call(&call_expr.func, &call_expr.args, scope, cur_frag)
+        compile_macro_call(call_expr.func, &call_expr.args, scope, cur_frag)
     } else {
-        compile_func_call(&call_expr.func, &call_expr.args, scope, cur_frag)
+        compile_func_call(call_expr.func, &call_expr.args, scope, cur_frag)
     }
 }
 
-fn compile_struct_expr<'a>(
-    struct_expr: &'a ast::StructExpr,
-    scope: &mut Scope<'a, '_>,
+fn compile_struct_expr<'src>(
+    struct_expr: &ast::StructExpr<'src>,
+    scope: &mut Scope<'src, '_>,
     cur_frag: &mut FragId,
-) -> Typed<'a, ir::Value> {
-    let struct_fields = scope.global.iter_fields_of_struct(&struct_expr.name);
+) -> Typed<'src, ir::Value> {
+    let struct_fields = scope.global.iter_fields_of_struct(struct_expr.name);
 
     if struct_expr.fields.len() != struct_fields.len() {
         panic!(
@@ -468,8 +468,8 @@ fn compile_struct_expr<'a>(
         );
     }
 
-    struct FieldInfo<'a> {
-        ty: &'a Type<'a>,
+    struct FieldInfo<'src> {
+        ty: &'src Type<'src>,
         frame_offset: usize,
     }
 
@@ -490,7 +490,7 @@ fn compile_struct_expr<'a>(
         .collect();
 
     for field in &struct_expr.fields {
-        let Some(expected_field) = expected_fields.get_mut(&*field.name).map(Option::take) else {
+        let Some(expected_field) = expected_fields.get_mut(field.name).map(Option::take) else {
             panic!(
                 "field `{}` not found in struct `{}`",
                 field.name, struct_expr.name
@@ -503,12 +503,12 @@ fn compile_struct_expr<'a>(
             Ordering::Less | Ordering::Equal => {
                 scope.frame_offset = field_info.frame_offset;
                 compile_expr_and_push(&field.value, scope, cur_frag)
-                    .expect_ty(field_info.ty, &field.name);
+                    .expect_ty(field_info.ty, field.name);
             }
             Ordering::Greater => {
                 let prev_frame_offset = scope.frame_offset;
                 compile_expr_and_push(&field.value, scope, cur_frag)
-                    .expect_ty(field_info.ty, &field.name);
+                    .expect_ty(field_info.ty, field.name);
                 compile_move(
                     ir::Place::Direct(ir::DirectPlace::StackFrame {
                         offset: field_info.frame_offset,
@@ -526,15 +526,15 @@ fn compile_struct_expr<'a>(
 
     Typed::new(
         stack_value_at(struct_frame_offset),
-        Type::Named(&struct_expr.name),
+        Type::Named(struct_expr.name),
     )
 }
 
-fn compile_tuple_expr<'a>(
-    elements: &'a [ast::Expr],
-    scope: &mut Scope<'a, '_>,
+fn compile_tuple_expr<'src>(
+    elements: &[ast::Expr<'src>],
+    scope: &mut Scope<'src, '_>,
     cur_frag: &mut FragId,
-) -> Typed<'a, ir::Value> {
+) -> Typed<'src, ir::Value> {
     Typed::new(
         stack_value_at(scope.frame_offset),
         Type::Tuple(
@@ -546,11 +546,11 @@ fn compile_tuple_expr<'a>(
     )
 }
 
-fn compile_array_expr<'a>(
-    array_expr: &'a ast::ArrayExpr,
-    scope: &mut Scope<'a, '_>,
+fn compile_array_expr<'src>(
+    array_expr: &ast::ArrayExpr<'src>,
+    scope: &mut Scope<'src, '_>,
     cur_frag: &mut FragId,
-) -> Typed<'a, ir::Value> {
+) -> Typed<'src, ir::Value> {
     Typed::new(
         stack_value_at(scope.frame_offset),
         match *array_expr {
@@ -629,7 +629,7 @@ struct PlaceMut {
     mutability: Mutability,
 }
 
-fn compile_var_access<'a>(name: &'a str, scope: &Scope<'a, '_>) -> Typed<'a, PlaceMut> {
+fn compile_var_access<'src>(name: &'src str, scope: &Scope<'src, '_>) -> Typed<'src, PlaceMut> {
     let Some(var) = scope.vars.iter().rev().find(|var| var.name == name) else {
         panic!("variable `{name}` not found");
     };
@@ -644,12 +644,12 @@ fn compile_var_access<'a>(name: &'a str, scope: &Scope<'a, '_>) -> Typed<'a, Pla
     )
 }
 
-fn compile_field_access<'a>(
-    base: &'a ast::Place,
-    field_name: &'a str,
-    scope: &mut Scope<'a, '_>,
+fn compile_field_access<'src>(
+    base: &ast::Place<'src>,
+    field_name: &'src str,
+    scope: &mut Scope<'src, '_>,
     cur_frag: &mut FragId,
-) -> Typed<'a, PlaceMut> {
+) -> Typed<'src, PlaceMut> {
     let mut base = compile_place(base, scope, cur_frag);
     base = compile_deref(base, scope, *cur_frag, true);
     let found_field = match &base.ty {
@@ -657,7 +657,7 @@ fn compile_field_access<'a>(
             tys.get(index).map(|ty| {
                 Typed::new(
                     tys[..index].iter().map(|ty| scope.size_of(ty)).sum(),
-                    ty.to_owned(),
+                    ty.clone(),
                 )
             })
         }),
@@ -697,12 +697,12 @@ fn compile_field_access<'a>(
     Typed::new(base.value, field_ty)
 }
 
-fn compile_deref<'a>(
-    place: Typed<'a, PlaceMut>,
-    scope: &mut Scope<'a, '_>,
+fn compile_deref<'src>(
+    place: Typed<'src, PlaceMut>,
+    scope: &mut Scope<'src, '_>,
     cur_frag: FragId,
     indexing: bool,
-) -> Typed<'a, PlaceMut> {
+) -> Typed<'src, PlaceMut> {
     let Typed {
         ty: Type::Ref { mutable, ty },
         value: PlaceMut { place, mutability },
@@ -750,12 +750,12 @@ fn compile_deref<'a>(
     }
 }
 
-fn compile_index<'a>(
-    base: &'a ast::Place,
-    index: &'a ast::Expr,
-    scope: &mut Scope<'a, '_>,
+fn compile_index<'src>(
+    base: &ast::Place<'src>,
+    index: &ast::Expr<'src>,
+    scope: &mut Scope<'src, '_>,
     cur_frag: &mut FragId,
-) -> Typed<'a, PlaceMut> {
+) -> Typed<'src, PlaceMut> {
     let base = compile_place(base, scope, cur_frag);
     let base = compile_deref(base, scope, *cur_frag, true);
     let Type::Array { ty: elem_ty, .. } = base.ty else {
@@ -792,11 +792,11 @@ fn compile_index<'a>(
     )
 }
 
-fn compile_place<'a>(
-    place: &'a ast::Place,
-    scope: &mut Scope<'a, '_>,
+fn compile_place<'src>(
+    place: &ast::Place<'src>,
+    scope: &mut Scope<'src, '_>,
     cur_frag: &mut FragId,
-) -> Typed<'a, PlaceMut> {
+) -> Typed<'src, PlaceMut> {
     let orig_frame_offset = scope.frame_offset;
     let result = match place {
         ast::Place::Var(ident) => compile_var_access(ident, scope),
@@ -823,12 +823,12 @@ fn compile_place<'a>(
     result
 }
 
-fn compile_ref<'a>(
+fn compile_ref<'src>(
     mutable: bool,
-    place: &'a ast::Place,
-    scope: &mut Scope<'a, '_>,
+    place: &ast::Place<'src>,
+    scope: &mut Scope<'src, '_>,
     cur_frag: &mut FragId,
-) -> Typed<'a, ir::Value> {
+) -> Typed<'src, ir::Value> {
     let place = compile_place(place, scope, cur_frag);
     if mutable && !matches!(place.value.mutability, Mutability::Mutable) {
         panic!(
@@ -857,13 +857,32 @@ fn compile_ref<'a>(
     )
 }
 
-fn compile_str<'a>(s: &'a str, scope: &mut Scope<'a, '_>) -> Typed<'a, ir::Value> {
+fn unescape(escaped_str: &str) -> impl Iterator<Item = u8> + '_ {
+    let mut bytes = escaped_str.bytes();
+    std::iter::from_fn(move || {
+        let byte = bytes.next()?;
+        match byte {
+            b'\\' => match bytes.next().expect("unterminated character escape") {
+                b'n' => Some(b'\n'),
+                b'r' => Some(b'\r'),
+                b't' => Some(b'\t'),
+                b'\\' => Some(b'\\'),
+                b'"' => Some(b'"'),
+                b'\'' => Some(b'\''),
+                _ => panic!("unknown character escape"),
+            },
+            _ => Some(byte),
+        }
+    })
+}
+
+fn compile_str<'src>(s: &'src str, scope: &mut Scope<'src, '_>) -> Typed<'src, ir::Value> {
     Typed::new(
-        ir::Value::Immediate(*scope.global.string_ids.entry(s).or_insert_with(|| {
+        ir::Value::Immediate(*scope.global.str_ids.entry(s).or_insert_with(|| {
             scope.global.frags.push(
                 [ir::Instruction::RestoreFrame { size: 1 }]
                     .into_iter()
-                    .chain(s.bytes().map(|byte| ir::Instruction::Output {
+                    .chain(unescape(s).map(|byte| ir::Instruction::Output {
                         src: ir::Value::Immediate(byte as usize),
                     }))
                     .collect(),
@@ -877,16 +896,16 @@ fn compile_str<'a>(s: &'a str, scope: &mut Scope<'a, '_>) -> Typed<'a, ir::Value
     )
 }
 
-fn compile_expr<'a>(
-    expr: &'a ast::Expr,
-    scope: &mut Scope<'a, '_>,
+fn compile_expr<'src>(
+    expr: &ast::Expr<'src>,
+    scope: &mut Scope<'src, '_>,
     cur_frag: &mut FragId,
-) -> Typed<'a, ir::Value> {
+) -> Typed<'src, ir::Value> {
     match *expr {
         ast::Expr::Int(i) => Typed::new(ir::Value::Immediate(i), Type::Usize),
         ast::Expr::Char(c) => Typed::new(ir::Value::Immediate(c as usize), Type::Char),
         ast::Expr::Bool(b) => Typed::new(ir::Value::Immediate(b as usize), Type::Bool),
-        ast::Expr::Str(ref s) => compile_str(s, scope),
+        ast::Expr::Str(s) => compile_str(s, scope),
         ast::Expr::Place(ref place) => compile_place(place, scope, cur_frag)
             .map(|place| place.place)
             .map(ir::Value::At),
@@ -911,11 +930,11 @@ fn compile_expr<'a>(
     }
 }
 
-fn compile_expr_and_push<'a>(
-    expr: &'a ast::Expr,
-    scope: &mut Scope<'a, '_>,
+fn compile_expr_and_push<'src>(
+    expr: &ast::Expr<'src>,
+    scope: &mut Scope<'src, '_>,
     cur_frag: &mut FragId,
-) -> Typed<'a, ir::DirectPlace> {
+) -> Typed<'src, ir::DirectPlace> {
     let orig_frame_offset = scope.frame_offset;
     let result = compile_expr(expr, scope, cur_frag);
     let size = scope.size_of(&result.ty);
@@ -1038,28 +1057,28 @@ fn compile_store_mode(mode: ast::AssignMode) -> ir::StoreMode {
     }
 }
 
-struct GlobalState<'a> {
-    func_defs: &'a BTreeMap<&'a str, FuncDef<'a>>,
-    struct_defs: &'a BTreeMap<&'a str, StructDef<'a>>,
+struct GlobalState<'src> {
+    func_defs: &'src BTreeMap<&'src str, FuncDef<'src>>,
+    struct_defs: &'src BTreeMap<&'src str, StructDef<'src>>,
     frags: Vec<Vec<ir::Instruction>>,
-    func_ids: BTreeMap<&'a str, FragId>,
-    string_ids: BTreeMap<&'a str, FragId>,
+    func_ids: BTreeMap<&'src str, FragId>,
+    str_ids: BTreeMap<&'src str, FragId>,
 }
 
 // frag 0 is the exit psuedo-fragment (it never actually gets executed due to the while loop)
 const EXIT_FRAG: FragId = 0;
 
-impl<'a> GlobalState<'a> {
+impl<'src> GlobalState<'src> {
     fn new(
-        func_defs: &'a BTreeMap<&'a str, FuncDef<'a>>,
-        struct_defs: &'a BTreeMap<&'a str, StructDef<'a>>,
+        func_defs: &'src BTreeMap<&'src str, FuncDef<'src>>,
+        struct_defs: &'src BTreeMap<&'src str, StructDef<'src>>,
     ) -> Self {
         Self {
             func_defs,
             struct_defs,
             frags: vec![vec![]],
             func_ids: BTreeMap::new(),
-            string_ids: BTreeMap::new(),
+            str_ids: BTreeMap::new(),
         }
     }
 
@@ -1069,7 +1088,10 @@ impl<'a> GlobalState<'a> {
         frag_id
     }
 
-    fn iter_fields_of_struct(&self, name: &str) -> impl ExactSizeIterator<Item = &'a Field<'a>> {
+    fn iter_fields_of_struct(
+        &self,
+        name: &str,
+    ) -> impl ExactSizeIterator<Item = &'src Field<'src>> {
         self.struct_defs
             .get(name)
             .unwrap_or_else(|| panic!("struct `{name}` not found"))
@@ -1106,17 +1128,17 @@ impl<'a> GlobalState<'a> {
     }
 }
 
-struct Scope<'a, 'b> {
-    func_def: &'a FuncDef<'a>,
-    vars: Vec<Var<'a>>,
+struct Scope<'src, 'b> {
+    func_def: &'src FuncDef<'src>,
+    vars: Vec<Var<'src>>,
     frame_offset: usize,
     frame_call_offset: usize,
-    global: &'b mut GlobalState<'a>,
+    global: &'b mut GlobalState<'src>,
     loop_stack: Vec<FragPair>,
 }
 
-impl<'a, 'b> Scope<'a, 'b> {
-    fn new(func_def: &'a FuncDef<'a>, global: &'b mut GlobalState<'a>) -> Self {
+impl<'src, 'b> Scope<'src, 'b> {
+    fn new(func_def: &'src FuncDef<'src>, global: &'b mut GlobalState<'src>) -> Self {
         let frame_call_offset = global.size_of(&func_def.ret_ty) + 1; // return value and frag id
         let mut frame_offset = frame_call_offset + 1; // call frag id
         let mut vars = vec![];
@@ -1178,7 +1200,11 @@ impl<'a, 'b> Scope<'a, 'b> {
     }
 }
 
-fn execute_block<'a>(body: &'a [ast::Statement], scope: &mut Scope<'a, '_>, cur_frag: &mut FragId) {
+fn execute_block<'src>(
+    body: &[ast::Statement<'src>],
+    scope: &mut Scope<'src, '_>,
+    cur_frag: &mut FragId,
+) {
     let block = compile_block(body, scope);
     scope.global.frags[*cur_frag].extend(goto(block.start, scope.frame_call_offset));
     *cur_frag = block.end;
@@ -1190,7 +1216,10 @@ struct FragPair {
     end: FragId,
 }
 
-fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>) -> FragPair {
+fn compile_block<'src>(
+    statements: &[ast::Statement<'src>],
+    scope: &mut Scope<'src, '_>,
+) -> FragPair {
     let orig_frame_offset = scope.frame_offset;
     let start_frag = scope.new_frag();
     let mut cur_frag = start_frag;
@@ -1199,7 +1228,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
         match *statement {
             ast::Statement::Let {
                 mutable,
-                ref name,
+                name,
                 ref ty,
                 ref value,
             } => {
@@ -1416,7 +1445,7 @@ fn compile_block<'a>(statements: &'a [ast::Statement], scope: &mut Scope<'a, '_>
     }
 }
 
-fn compile_func<'a>(name: &'a str, global_state: &mut GlobalState<'a>) -> FragId {
+fn compile_func<'src>(name: &'src str, global_state: &mut GlobalState<'src>) -> FragId {
     if let Some(&func_id) = global_state.func_ids.get(name) {
         // function already compiled
         return func_id;
@@ -1445,12 +1474,12 @@ fn compile_func<'a>(name: &'a str, global_state: &mut GlobalState<'a>) -> FragId
 
 static STD: LazyLock<ast::Ast> = LazyLock::new(|| {
     let src = include_str!("std.bs");
-    let mut ast = ast::Ast::parse(src).expect("failed to parse standard library");
+    let mut ast = ast::Ast::try_from(src).expect("failed to parse standard library");
     for item in &mut ast.items {
         let ast::Item::FuncDef { name, .. } = item else {
             continue;
         };
-        let op = match &**name {
+        *name = match *name {
             "add" => "+",
             "sub" => "-",
             "mul" => "*",
@@ -1463,28 +1492,26 @@ static STD: LazyLock<ast::Ast> = LazyLock::new(|| {
             "not" => "!",
             _ => continue,
         };
-        name.clear();
-        name.push_str(op);
     }
     ast
 });
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
-enum Type<'a> {
+enum Type<'src> {
     Usize,
     Char,
     Bool,
     Str,
-    Tuple(Vec<Type<'a>>),
+    Tuple(Vec<Type<'src>>),
     Array {
-        ty: Box<Type<'a>>,
+        ty: Box<Type<'src>>,
         len: Option<usize>,
     },
-    Named(&'a str),
+    Named(&'src str),
     Ref {
         mutable: bool,
-        ty: Box<Type<'a>>,
+        ty: Box<Type<'src>>,
     },
 }
 
@@ -1556,16 +1583,16 @@ static PRIMITIVE_TYPES: LazyLock<BTreeMap<&str, Type<'static>>> = LazyLock::new(
     ])
 });
 
-impl<'a> From<&'a ast::Type> for Type<'a> {
-    fn from(ty: &'a ast::Type) -> Self {
+impl<'src> From<&ast::Type<'src>> for Type<'src> {
+    fn from(ty: &ast::Type<'src>) -> Self {
         match *ty {
             ast::Type::Tuple(ref tys) => Type::Tuple(tys.iter().map(Type::from).collect()),
             ast::Type::Array { ref ty, len } => Type::Array {
                 ty: Box::new(Type::from(&**ty)),
                 len,
             },
-            ast::Type::Named(ref name) => match PRIMITIVE_TYPES.get(&**name) {
-                Some(ty) => ty.to_owned(),
+            ast::Type::Named(name) => match PRIMITIVE_TYPES.get(name) {
+                Some(ty) => ty.clone(),
                 None => Type::Named(name),
             },
             ast::Type::Ref { mutable, ref ty } => Type::Ref {
@@ -1576,25 +1603,25 @@ impl<'a> From<&'a ast::Type> for Type<'a> {
     }
 }
 
-struct Param<'a> {
+struct Param<'src> {
     mutable: bool,
-    name: &'a str,
-    ty: Type<'a>,
+    name: &'src str,
+    ty: Type<'src>,
 }
 
-struct FuncDef<'a> {
-    params: Vec<Param<'a>>,
-    ret_ty: Type<'a>,
-    body: Vec<ast::Statement>,
+struct FuncDef<'src> {
+    params: Vec<Param<'src>>,
+    ret_ty: Type<'src>,
+    body: Vec<ast::Statement<'src>>,
 }
 
-struct Field<'a> {
-    name: &'a str,
-    ty: Type<'a>,
+struct Field<'src> {
+    name: &'src str,
+    ty: Type<'src>,
 }
 
-struct StructDef<'a> {
-    fields: Vec<Field<'a>>,
+struct StructDef<'src> {
+    fields: Vec<Field<'src>>,
 }
 
 pub fn compile(ast: &ast::Ast) -> ir::Program {
@@ -1614,7 +1641,7 @@ pub fn compile(ast: &ast::Ast) -> ir::Program {
                         .iter()
                         .map(|param| Param {
                             mutable: param.mutable,
-                            name: &param.name,
+                            name: param.name,
                             ty: Type::from(&param.ty),
                         })
                         .collect(),
@@ -1626,17 +1653,17 @@ pub fn compile(ast: &ast::Ast) -> ir::Program {
                 }
             }
             ast::Item::StructDef { name, fields } => {
-                if PRIMITIVE_TYPES.contains_key(&**name) {
+                if PRIMITIVE_TYPES.contains_key(name) {
                     panic!("`{name}` is a primitive type and cannot be redefined");
                 }
-                if struct_defs.contains_key(&**name) {
+                if struct_defs.contains_key(name) {
                     panic!("`{name}` is defined multiple times");
                 }
                 let struct_def = StructDef {
                     fields: fields
                         .iter()
                         .map(|field| Field {
-                            name: &field.name,
+                            name: field.name,
                             ty: Type::from(&field.ty),
                         })
                         .collect(),

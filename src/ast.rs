@@ -1,62 +1,69 @@
 use {
     crate::{lexer, parser},
     chumsky::prelude::*,
-    derive_more::{Display, From},
 };
 
-// TODO: use a &str instead of a String
-pub type Ident = String;
-
 #[derive(Debug, Clone)]
-pub enum Place {
-    Var(Ident),
-    FieldAccess { base: Box<Place>, field: Ident },
-    Index { base: Box<Place>, index: Box<Expr> },
-    Deref(Box<Expr>),
+pub enum Place<'src> {
+    Var(&'src str),
+    FieldAccess {
+        base: Box<Place<'src>>,
+        field: &'src str,
+    },
+    Index {
+        base: Box<Place<'src>>,
+        index: Box<Expr<'src>>,
+    },
+    Deref(Box<Expr<'src>>),
 }
 
 #[derive(Debug, Clone)]
-pub struct CallExpr {
-    // TODO: instead of an Ident for the func, take an Expr to allow for dynamic dispatch
-    pub func: Ident,
+pub struct CallExpr<'src> {
+    pub func: &'src str,
     pub bang: bool,
-    pub args: Vec<Expr>,
+    pub args: Vec<Expr<'src>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Field {
-    pub name: Ident,
-    pub value: Expr,
+pub struct Field<'src> {
+    pub name: &'src str,
+    pub value: Expr<'src>,
 }
 
 #[derive(Debug, Clone)]
-pub struct StructExpr {
-    pub name: Ident,
-    pub fields: Vec<Field>,
+pub struct StructExpr<'src> {
+    pub name: &'src str,
+    pub fields: Vec<Field<'src>>,
 }
 
 #[derive(Debug, Clone)]
-pub enum ArrayExpr {
-    List(Vec<Expr>),
-    Repeat { value: Box<Expr>, len: usize },
+pub enum ArrayExpr<'src> {
+    List(Vec<Expr<'src>>),
+    Repeat { value: Box<Expr<'src>>, len: usize },
 }
 
 #[derive(Debug, Clone)]
-pub enum Expr {
+pub enum Expr<'src> {
     Int(usize),
     Char(char),
     Bool(bool),
-    Str(String),
-    Place(Place),
-    Ref { mutable: bool, place: Place },
-    Call(CallExpr),
-    Struct(StructExpr),
-    Tuple(Vec<Expr>),
-    Array(ArrayExpr),
-    Cast { expr: Box<Expr>, ty: Type },
+    Str(&'src str),
+    Place(Place<'src>),
+    Ref {
+        mutable: bool,
+        place: Place<'src>,
+    },
+    Call(CallExpr<'src>),
+    Struct(StructExpr<'src>),
+    Tuple(Vec<Expr<'src>>),
+    Array(ArrayExpr<'src>),
+    Cast {
+        expr: Box<Expr<'src>>,
+        ty: Type<'src>,
+    },
 }
 
-impl Default for Expr {
+impl Default for Expr<'_> {
     fn default() -> Self {
         Expr::Tuple(vec![])
     }
@@ -78,37 +85,37 @@ pub enum Pattern {
 }
 
 #[derive(Debug, Clone)]
-pub enum Statement {
+pub enum Statement<'src> {
     Let {
         mutable: bool,
-        name: Ident,
-        ty: Option<Type>,
-        value: Option<Expr>,
+        name: &'src str,
+        ty: Option<Type<'src>>,
+        value: Option<Expr<'src>>,
     },
     Assign {
-        place: Place,
-        value: Expr,
+        place: Place<'src>,
+        value: Expr<'src>,
         mode: AssignMode,
     },
-    Loop(Vec<Statement>),
+    Loop(Vec<Statement<'src>>),
     Continue,
     Break,
     If {
-        cond: Expr,
-        true_branch: Vec<Statement>,
-        false_branch: Vec<Statement>,
+        cond: Expr<'src>,
+        true_branch: Vec<Statement<'src>>,
+        false_branch: Vec<Statement<'src>>,
     },
     Match {
-        scrutinee: Expr,
-        arms: Vec<(Pattern, Vec<Statement>)>,
+        scrutinee: Expr<'src>,
+        arms: Vec<(Pattern, Vec<Statement<'src>>)>,
     },
-    Block(Vec<Statement>),
-    Return(Expr),
-    Eval(Expr),
+    Block(Vec<Statement<'src>>),
+    Return(Expr<'src>),
+    Eval(Expr<'src>),
 }
 
-impl From<Statement> for Vec<Statement> {
-    fn from(statement: Statement) -> Self {
+impl<'src> From<Statement<'src>> for Vec<Statement<'src>> {
+    fn from(statement: Statement<'src>) -> Self {
         match statement {
             Statement::Block(body) => body,
             _ => Vec::from([statement]),
@@ -117,11 +124,17 @@ impl From<Statement> for Vec<Statement> {
 }
 
 #[derive(Debug, Clone)]
-pub enum Type {
-    Tuple(Vec<Type>),
-    Array { ty: Box<Type>, len: Option<usize> },
-    Named(Ident),
-    Ref { mutable: bool, ty: Box<Type> },
+pub enum Type<'src> {
+    Tuple(Vec<Type<'src>>),
+    Array {
+        ty: Box<Type<'src>>,
+        len: Option<usize>,
+    },
+    Named(&'src str),
+    Ref {
+        mutable: bool,
+        ty: Box<Type<'src>>,
+    },
     // TODO: support function types
     // Func {
     //     param_tys: Vec<Type>,
@@ -129,13 +142,13 @@ pub enum Type {
     // }
 }
 
-impl Default for Type {
+impl Default for Type<'_> {
     fn default() -> Self {
         Type::Tuple(vec![])
     }
 }
 
-impl std::fmt::Display for Type {
+impl std::fmt::Display for Type<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Type::Tuple(tys) => {
@@ -169,51 +182,57 @@ impl std::fmt::Display for Type {
 }
 
 #[derive(Debug, Clone)]
-pub struct Param {
+pub struct Param<'src> {
     pub mutable: bool,
-    pub name: Ident,
-    pub ty: Type,
+    pub name: &'src str,
+    pub ty: Type<'src>,
 }
 
 #[derive(Debug, Clone)]
-pub struct FieldDef {
-    pub name: Ident,
-    pub ty: Type,
+pub struct FieldDef<'src> {
+    pub name: &'src str,
+    pub ty: Type<'src>,
 }
 
 #[derive(Debug, Clone)]
-pub enum Item {
+pub enum Item<'src> {
     FuncDef {
-        name: Ident,
-        params: Vec<Param>,
-        ret_ty: Type,
-        body: Vec<Statement>,
+        name: &'src str,
+        params: Vec<Param<'src>>,
+        ret_ty: Type<'src>,
+        body: Vec<Statement<'src>>,
     },
     StructDef {
-        name: Ident,
-        fields: Vec<FieldDef>,
+        name: &'src str,
+        fields: Vec<FieldDef<'src>>,
     },
 }
 
 #[derive(Debug, Clone)]
-pub struct Ast {
-    pub items: Vec<Item>,
+pub struct Ast<'src> {
+    pub items: Vec<Item<'src>>,
 }
 
-#[derive(Debug, Clone, From, Display)]
-pub enum ParseOrLexError {
-    #[display("lex error: {_0:#?}")]
-    LexError(Vec<Simple<char>>),
-    #[display("parse error: {_0:#?}")]
-    ParseError(Vec<Simple<lexer::Token>>),
-}
+impl<'src> TryFrom<&'src str> for Ast<'src> {
+    type Error = anyhow::Error;
 
-impl std::error::Error for ParseOrLexError {}
-
-impl Ast {
-    pub fn parse(src: &str) -> Result<Self, ParseOrLexError> {
-        let tokens = lexer::lexer().parse(src)?;
-        let ast = parser::ast_parser().parse(tokens)?;
+    fn try_from(src: &'src str) -> Result<Self, Self::Error> {
+        let tokens = match lexer::lexer().parse(src).into_result() {
+            Ok(tokens) => tokens,
+            Err(errs) => anyhow::bail!(errs
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")),
+        };
+        let ast = match parser::ast_parser().parse(&tokens).into_result() {
+            Ok(ast) => ast,
+            Err(errs) => anyhow::bail!(errs
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")),
+        };
         Ok(ast)
     }
 }

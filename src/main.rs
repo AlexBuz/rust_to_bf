@@ -51,7 +51,7 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     DEBUG.store(args.debug, Ordering::Relaxed);
     let src = std::fs::read_to_string(args.source_file)?;
-    let ast = ast::Ast::parse(&src)?;
+    let ast = ast::Ast::try_from(&*src)?;
     debug_println!("{ast:#?}");
     let program = compiler::compile(&ast);
     debug_println!("{program:#?}");

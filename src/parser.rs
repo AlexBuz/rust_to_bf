@@ -1,20 +1,44 @@
 use {
     crate::{ast::*, lexer::Token},
-    chumsky::prelude::*,
+    chumsky::prelude::{Parser as _, *},
 };
 
-fn ident_parser() -> impl Parser<Token, Ident, Error = Simple<Token>> + Clone {
+pub trait Parser<'tokens, 'src: 'tokens, Output>:
+    chumsky::prelude::Parser<
+        'tokens,
+        &'tokens [Token<'src>],
+        Output,
+        extra::Err<Rich<'tokens, Token<'src>>>,
+    > + Clone
+    + 'tokens
+{
+}
+impl<
+        'tokens,
+        'src: 'tokens,
+        Output,
+        T: chumsky::prelude::Parser<
+                'tokens,
+                &'tokens [Token<'src>],
+                Output,
+                extra::Err<Rich<'tokens, Token<'src>>>,
+            > + Clone
+            + 'tokens,
+    > Parser<'tokens, 'src, Output> for T
+{
+}
+
+fn ident_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, &'src str> {
     select! { Token::Ident(ident) => ident }
 }
 
-fn place_parser(
-    atom_parser: impl Parser<Token, Expr, Error = Simple<Token>> + Clone + 'static,
-) -> impl Parser<Token, Place, Error = Simple<Token>> + Clone {
-    enum FieldOrIndex {
-        Field(Ident),
-        Index(Expr),
+fn place_parser<'tokens, 'src: 'tokens>(
+    atom_parser: impl Parser<'tokens, 'src, Expr<'src>>,
+) -> impl Parser<'tokens, 'src, Place<'src>> {
+    enum FieldOrIndex<'src> {
+        Field(&'src str),
+        Index(Expr<'src>),
     }
-
     recursive(|place_parser| {
         choice((
             just(Token::Star)
@@ -24,7 +48,7 @@ fn place_parser(
             ident_parser().map(Place::Var),
             place_parser.delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
         ))
-        .then(
+        .foldl(
             choice((
                 just(Token::Dot)
                     .ignore_then(ident_parser().or(select! { Token::Int(int) => int }))
@@ -35,49 +59,50 @@ fn place_parser(
                     .map(FieldOrIndex::Index),
             ))
             .repeated(),
+            |base, field_or_index| match field_or_index {
+                FieldOrIndex::Field(field) => Place::FieldAccess {
+                    base: Box::new(base),
+                    field,
+                },
+                FieldOrIndex::Index(index) => Place::Index {
+                    base: Box::new(base),
+                    index: Box::new(index),
+                },
+            },
         )
-        .foldl(|base, field_or_index| match field_or_index {
-            FieldOrIndex::Field(field) => Place::FieldAccess {
-                base: Box::new(base),
-                field,
-            },
-            FieldOrIndex::Index(index) => Place::Index {
-                base: Box::new(base),
-                index: Box::new(index),
-            },
-        })
     })
 }
 
-fn int_parser() -> impl Parser<Token, usize, Error = Simple<Token>> + Clone {
+fn int_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, usize> {
     select! { Token::Int(i) => i }.from_str().unwrapped()
 }
 
-fn char_parser() -> impl Parser<Token, char, Error = Simple<Token>> + Clone {
+fn char_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, char> {
     select! { Token::Char(c) => c }
 }
 
-fn bool_parser() -> impl Parser<Token, bool, Error = Simple<Token>> + Clone {
+fn bool_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, bool> {
     select! {
         Token::True => true,
         Token::False => false,
     }
 }
 
-fn str_parser() -> impl Parser<Token, String, Error = Simple<Token>> + Clone {
+fn str_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, &'src str> {
     select! { Token::Str(s) => s }
 }
 
-fn tuple_parser<Elem: Clone>(
-    elem_parser: impl Parser<Token, Elem, Error = Simple<Token>> + Clone,
-) -> impl Parser<Token, Vec<Elem>, Error = Simple<Token>> + Clone {
+fn tuple_parser<'tokens, 'src: 'tokens, Elem: Clone + 'tokens>(
+    elem_parser: impl Parser<'tokens, 'src, Elem>,
+) -> impl Parser<'tokens, 'src, Vec<Elem>> {
     choice((
         // multiple elements
         elem_parser
             .clone()
             .separated_by(just(Token::Comma))
             .at_least(2)
-            .allow_trailing(),
+            .allow_trailing()
+            .collect(),
         // single element
         elem_parser.then_ignore(just(Token::Comma)).map(|x| vec![x]),
         // empty
@@ -86,9 +111,9 @@ fn tuple_parser<Elem: Clone>(
     .delimited_by(just(Token::OpenParen), just(Token::CloseParen))
 }
 
-fn repeat_parser<Elem>(
-    elem_parser: impl Parser<Token, Elem, Error = Simple<Token>> + Clone,
-) -> impl Parser<Token, (Box<Elem>, usize), Error = Simple<Token>> + Clone {
+fn repeat_parser<'tokens, 'src: 'tokens, Elem: 'tokens>(
+    elem_parser: impl Parser<'tokens, 'src, Elem>,
+) -> impl Parser<'tokens, 'src, (Box<Elem>, usize)> {
     elem_parser
         .map(Box::new)
         .then_ignore(just(Token::Semi))
@@ -96,10 +121,10 @@ fn repeat_parser<Elem>(
         .delimited_by(just(Token::OpenBracket), just(Token::CloseBracket))
 }
 
-fn atom_parser(
-    expr_parser: impl Parser<Token, Expr, Error = Simple<Token>> + Clone + 'static,
+fn atom_parser<'tokens, 'src: 'tokens>(
+    expr_parser: impl Parser<'tokens, 'src, Expr<'src>>,
     deny_top_level_empty_struct: bool,
-) -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
+) -> impl Parser<'tokens, 'src, Expr<'src>> {
     recursive(|atom_parser| {
         let ref_expr = just(Token::And)
             .ignore_then(maybe_token(Token::Mut))
@@ -117,6 +142,7 @@ fn atom_parser(
                     .clone()
                     .separated_by(just(Token::Comma))
                     .allow_trailing()
+                    .collect()
                     .delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
             )
             .map(|((func, bang), args)| Expr::Call(CallExpr { func, bang, args }));
@@ -126,24 +152,17 @@ fn atom_parser(
                 .then(
                     ident_parser()
                         .then(just(Token::Colon).ignore_then(expr_parser.clone()).or_not())
+                        .map(|(name, value)| Field {
+                            name,
+                            value: value.unwrap_or(Expr::Place(Place::Var(name))),
+                        })
                         .separated_by(just(Token::Comma))
                         .allow_trailing()
                         .at_least(min_fields)
+                        .collect::<Vec<_>>()
                         .delimited_by(just(Token::OpenBrace), just(Token::CloseBrace)),
                 )
-                .map(|(name, fields)| {
-                    Expr::Struct(StructExpr {
-                        name,
-                        fields: fields
-                            .into_iter()
-                            .map(|(name, value)| Field {
-                                value: value
-                                    .unwrap_or_else(|| Expr::Place(Place::Var(name.clone()))),
-                                name,
-                            })
-                            .collect(),
-                    })
-                })
+                .map(|(name, fields)| Expr::Struct(StructExpr { name, fields }))
         };
 
         let array_expr = choice((
@@ -151,6 +170,7 @@ fn atom_parser(
                 .clone()
                 .separated_by(just(Token::Comma))
                 .allow_trailing()
+                .collect()
                 .delimited_by(just(Token::OpenBracket), just(Token::CloseBracket))
                 .map(ArrayExpr::List),
             repeat_parser(expr_parser.clone()).map(|(value, len)| ArrayExpr::Repeat { value, len }),
@@ -174,114 +194,108 @@ fn atom_parser(
     })
 }
 
-fn expr_parser(
+fn expr_parser<'tokens, 'src: 'tokens>(
     deny_top_level_empty_struct: bool,
-) -> impl Parser<Token, Expr, Error = Simple<Token>> + Clone {
+) -> impl Parser<'tokens, 'src, Expr<'src>> {
     recursive(move |expr_parser| {
-        let prec = just(Token::Bang)
-            .to("!")
-            .repeated()
-            .then(atom_parser(expr_parser, deny_top_level_empty_struct))
-            .foldr(|op, expr| {
+        let prec = just(Token::Bang).to("!").repeated().foldr(
+            atom_parser(expr_parser, deny_top_level_empty_struct),
+            |op, expr| {
                 Expr::Call(CallExpr {
-                    func: op.to_string(),
+                    func: op,
                     bang: false,
                     args: vec![expr],
                 })
-            });
+            },
+        );
 
-        let prec = prec
-            .clone()
-            .then(just(Token::As).ignore_then(type_parser()).repeated())
-            .foldl(|expr, ty| Expr::Cast {
+        let prec = prec.foldl(
+            just(Token::As).ignore_then(type_parser()).repeated(),
+            |expr, ty| Expr::Cast {
                 expr: Box::new(expr),
                 ty,
-            });
+            },
+        );
 
-        let prec = prec
-            .clone()
-            .then(
-                (choice([
-                    just(Token::Star).to("*"),
-                    just(Token::Slash).to("/"),
-                    just(Token::Percent).to("%"),
-                ]))
+        let prec = prec.clone().foldl(
+            (choice([
+                just(Token::Star).to("*"),
+                just(Token::Slash).to("/"),
+                just(Token::Percent).to("%"),
+            ]))
+            .then(prec)
+            .repeated(),
+            |lhs, (op, rhs)| {
+                Expr::Call(CallExpr {
+                    func: op,
+                    bang: false,
+                    args: vec![lhs, rhs],
+                })
+            },
+        );
+
+        let prec = prec.clone().foldl(
+            (choice([just(Token::Plus).to("+"), just(Token::Minus).to("-")]))
                 .then(prec)
                 .repeated(),
-            )
-            .foldl(|lhs, (op, rhs)| {
+            |lhs, (op, rhs)| {
                 Expr::Call(CallExpr {
-                    func: op.to_string(),
+                    func: op,
                     bang: false,
                     args: vec![lhs, rhs],
                 })
-            });
+            },
+        );
 
-        let prec = prec
-            .clone()
-            .then(
-                (choice([just(Token::Plus).to("+"), just(Token::Minus).to("-")]))
-                    .then(prec)
-                    .repeated(),
-            )
-            .foldl(|lhs, (op, rhs)| {
+        let prec = prec.clone().foldl(
+            (choice([
+                just(Token::LtEq).to("<="),
+                just(Token::Lt).to("<"),
+                just(Token::GtEq).to(">="),
+                just(Token::Gt).to(">"),
+                just(Token::EqEq).to("=="),
+                just(Token::BangEq).to("!="),
+            ]))
+            .then(prec)
+            .or_not(),
+            |lhs, (op, rhs)| {
                 Expr::Call(CallExpr {
-                    func: op.to_string(),
-                    bang: false,
-                    args: vec![lhs, rhs],
-                })
-            });
-
-        let prec = prec
-            .clone()
-            .then(
-                (choice([
-                    just(Token::LtEq).to("<="),
-                    just(Token::Lt).to("<"),
-                    just(Token::GtEq).to(">="),
-                    just(Token::Gt).to(">"),
-                    just(Token::EqEq).to("=="),
-                    just(Token::BangEq).to("!="),
-                ]))
-                .then(prec)
-                .or_not(),
-            )
-            .foldl(|lhs, (op, rhs)| {
-                Expr::Call(CallExpr {
-                    func: op.to_string(),
+                    func: op,
                     bang: matches!(op, "==" | "!="),
                     args: vec![lhs, rhs],
                 })
-            });
+            },
+        );
 
-        let prec = prec
-            .clone()
-            .then(just(Token::AndAnd).to("&&").then(prec).repeated())
-            .foldl(|lhs, (op, rhs)| {
+        let prec = prec.clone().foldl(
+            just(Token::AndAnd).to("&&").then(prec).repeated(),
+            |lhs, (op, rhs)| {
                 Expr::Call(CallExpr {
-                    func: op.to_string(),
+                    func: op,
                     bang: true,
                     args: vec![lhs, rhs],
                 })
-            });
+            },
+        );
 
-        prec.clone()
-            .then(just(Token::OrOr).to("||").then(prec).repeated())
-            .foldl(|lhs, (op, rhs)| {
+        prec.clone().foldl(
+            just(Token::OrOr).to("||").then(prec).repeated(),
+            |lhs, (op, rhs)| {
                 Expr::Call(CallExpr {
-                    func: op.to_string(),
+                    func: op,
                     bang: true,
                     args: vec![lhs, rhs],
                 })
-            })
+            },
+        )
     })
 }
 
-fn maybe_token(token: Token) -> impl Parser<Token, bool, Error = Simple<Token>> + Clone {
+fn maybe_token<'tokens, 'src: 'tokens>(token: Token<'src>) -> impl Parser<'tokens, 'src, bool> {
     just(token).or_not().map(|m| m.is_some())
 }
 
-fn pattern_parser() -> impl Parser<Token, Pattern, Error = Simple<Token>> + Clone {
+fn pattern_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, Pattern> {
     choice((
         int_parser().map(Pattern::Int),
         char_parser().map(Pattern::Char),
@@ -290,8 +304,8 @@ fn pattern_parser() -> impl Parser<Token, Pattern, Error = Simple<Token>> + Clon
     ))
 }
 
-fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Simple<Token>> + Clone
-{
+fn statement_without_block_parser<'tokens, 'src: 'tokens>(
+) -> impl Parser<'tokens, 'src, Statement<'src>> {
     let r#let = just(Token::Let)
         .ignore_then(maybe_token(Token::Mut))
         .then(ident_parser())
@@ -323,7 +337,7 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
         .map(|((place, op), value)| Statement::Assign {
             place: place.clone(),
             value: Expr::Call(CallExpr {
-                func: op.to_string(),
+                func: op,
                 bang: false,
                 args: vec![Expr::Place(place), value],
             }),
@@ -377,7 +391,7 @@ fn statement_without_block_parser() -> impl Parser<Token, Statement, Error = Sim
     choice((r#let, assign, r#return, r#break, r#continue, eval))
 }
 
-fn block_parser() -> impl Parser<Token, Vec<Statement>, Error = Simple<Token>> + Clone {
+fn block_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, Vec<Statement<'src>>> {
     recursive(move |block_parser| {
         let if_else = recursive(|if_else| {
             just(Token::If)
@@ -429,6 +443,7 @@ fn block_parser() -> impl Parser<Token, Vec<Statement>, Error = Simple<Token>> +
                             ),
                         )
                         .repeated()
+                        .collect()
                         .delimited_by(just(Token::OpenBrace), just(Token::CloseBrace)),
                 )
                 .map(|(scrutinee, arms)| Statement::Match { scrutinee, arms });
@@ -449,56 +464,60 @@ fn block_parser() -> impl Parser<Token, Vec<Statement>, Error = Simple<Token>> +
         statement
             .separated_by(just(Token::Semi).repeated())
             .allow_trailing()
+            .collect()
             .delimited_by(just(Token::OpenBrace), just(Token::CloseBrace))
     })
 }
 
-fn type_parser() -> impl Parser<Token, Type, Error = Simple<Token>> + Clone {
+fn type_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, Type<'src>> {
     recursive(|type_parser| {
         just(Token::And)
             .ignore_then(maybe_token(Token::Mut))
             .repeated()
-            .then(choice((
-                ident_parser().map(Type::Named),
-                tuple_parser(type_parser.clone()).map(Type::Tuple),
-                repeat_parser(type_parser.clone())
-                    .map(|(ty, len)| Type::Array { ty, len: Some(len) }),
-                type_parser
-                    .clone()
-                    .delimited_by(just(Token::OpenBracket), just(Token::CloseBracket))
-                    .map(|ty| Type::Array {
-                        ty: Box::new(ty),
-                        len: None,
-                    }),
-                type_parser.delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
-            )))
-            .foldr(|mutable, ty| Type::Ref {
-                mutable,
-                ty: Box::new(ty),
-            })
+            .foldr(
+                choice((
+                    ident_parser().map(Type::Named),
+                    tuple_parser(type_parser.clone()).map(Type::Tuple),
+                    repeat_parser(type_parser.clone())
+                        .map(|(ty, len)| Type::Array { ty, len: Some(len) }),
+                    type_parser
+                        .clone()
+                        .delimited_by(just(Token::OpenBracket), just(Token::CloseBracket))
+                        .map(|ty| Type::Array {
+                            ty: Box::new(ty),
+                            len: None,
+                        }),
+                    type_parser.delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
+                )),
+                |mutable, ty| Type::Ref {
+                    mutable,
+                    ty: Box::new(ty),
+                },
+            )
     })
 }
 
-fn field_parser() -> impl Parser<Token, FieldDef, Error = Simple<Token>> {
+fn field_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, FieldDef<'src>> {
     ident_parser()
         .then_ignore(just(Token::Colon))
         .then(type_parser())
         .map(|(name, ty)| FieldDef { name, ty })
 }
 
-fn struct_def_parser() -> impl Parser<Token, Item, Error = Simple<Token>> {
+fn struct_def_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, Item<'src>> {
     just(Token::Struct)
         .ignore_then(ident_parser())
         .then(
             field_parser()
                 .separated_by(just(Token::Comma))
                 .allow_trailing()
+                .collect()
                 .delimited_by(just(Token::OpenBrace), just(Token::CloseBrace)),
         )
         .map(|(name, fields)| Item::StructDef { name, fields })
 }
 
-fn param_parser() -> impl Parser<Token, Param, Error = Simple<Token>> {
+fn param_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, Param<'src>> {
     maybe_token(Token::Mut)
         .then(ident_parser())
         .then_ignore(just(Token::Colon))
@@ -506,13 +525,14 @@ fn param_parser() -> impl Parser<Token, Param, Error = Simple<Token>> {
         .map(|((mutable, name), ty)| Param { mutable, name, ty })
 }
 
-fn func_def_parser() -> impl Parser<Token, Item, Error = Simple<Token>> {
+fn func_def_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, Item<'src>> {
     just(Token::Fn)
         .ignore_then(ident_parser())
         .then(
             param_parser()
                 .separated_by(just(Token::Comma))
                 .allow_trailing()
+                .collect()
                 .delimited_by(just(Token::OpenParen), just(Token::CloseParen)),
         )
         .then(
@@ -530,13 +550,14 @@ fn func_def_parser() -> impl Parser<Token, Item, Error = Simple<Token>> {
         })
 }
 
-fn item_parser() -> impl Parser<Token, Item, Error = Simple<Token>> {
+fn item_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, Item<'src>> {
     func_def_parser().or(struct_def_parser())
 }
 
-pub fn ast_parser() -> impl Parser<Token, Ast, Error = Simple<Token>> {
+pub fn ast_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, Ast<'src>> {
     item_parser()
         .repeated()
+        .collect()
         .map(|items| Ast { items })
         .then_ignore(end())
 }
