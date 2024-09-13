@@ -7,65 +7,104 @@ mod lexer;
 mod parser;
 
 use {
-    clap::{Parser, ValueEnum},
+    clap::{Parser, Subcommand, ValueEnum},
     common::debug_println,
-    ir::Program,
     std::{
-        cell::LazyCell,
+        path::PathBuf,
         sync::atomic::{AtomicBool, Ordering},
     },
 };
 
 static DEBUG: AtomicBool = AtomicBool::new(false);
 
-#[derive(Clone, ValueEnum, Parser)]
-enum ExecuteMode {
-    Ir,
-    Bf,
-    None,
-}
+#[derive(Debug, Parser)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
 
-#[derive(Parser)]
-struct Args {
-    source_file: String,
-    #[clap(short, long, help = "Print the generated BF code")]
-    print_bf: bool,
-    #[clap(
-        short,
-        long = "execute",
-        default_value = "ir",
-        help = "Execute the program, either by interpreting the intermediate representation (faster) or the generated BF code (slower), or don't execute it at all"
-    )]
-    execute_mode: ExecuteMode,
-    #[clap(
-        short = 'm',
-        long,
-        help = "Print the final memory state (stack and heap) after execution, if execution is enabled"
-    )]
-    print_final_memory: bool,
-    #[arg(short, long, help = "Enable debug logging")]
+    /// Enable debug logging
+    #[arg(short, long)]
     debug: bool,
 }
 
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Compile a program to BF
+    Compile {
+        /// Input source file
+        input_path: PathBuf,
+
+        #[command(flatten)]
+        compile_options: CompileOptions,
+    },
+    /// Run a program
+    Run {
+        /// Input source file
+        input_path: PathBuf,
+
+        #[command(flatten)]
+        run_options: RunOptions,
+    },
+}
+
+#[derive(Debug, Parser)]
+struct CompileOptions {
+    /// Output file for generated BF code [leave unspecified for stdout]
+    #[arg(short)]
+    output_path: Option<PathBuf>,
+}
+
+#[derive(ValueEnum, Clone, Debug)]
+enum Stage {
+    Ir,
+    Bf,
+}
+
+#[derive(Debug, Parser)]
+struct RunOptions {
+    /// Compilation stage to run
+    #[arg(long, default_value = "ir")]
+    stage: Stage,
+
+    /// Print the final memory state after execution
+    #[arg(long)]
+    print_memory: bool,
+}
+
 fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
-    DEBUG.store(args.debug, Ordering::Relaxed);
-    let src = std::fs::read_to_string(args.source_file)?;
+    let cli = Cli::parse();
+    DEBUG.store(cli.debug, Ordering::Relaxed);
+    let (input_path, compile_options, run_options) = match cli.command {
+        Command::Compile {
+            input_path,
+            compile_options,
+        } => (input_path, Some(compile_options), None),
+        Command::Run {
+            input_path,
+            run_options,
+        } => (input_path, None, Some(run_options)),
+    };
+    let src = std::fs::read_to_string(input_path)?;
     let ast = ast::Ast::try_from(&*src)?;
     debug_println!("{ast:#?}");
-    let program = compiler::compile(&ast);
-    debug_println!("{program:#?}");
-    let bf_code = LazyCell::new(|| program.convert_to_bf());
-    if args.print_bf {
-        println!("{}", *bf_code);
+    let ir_program = compiler::compile(&ast);
+    debug_println!("{ir_program:#?}");
+    let bf_program = bf::Program::from(&ir_program);
+    if let Some(compile_options) = compile_options {
+        if let Some(output_path) = compile_options.output_path {
+            std::fs::write(output_path, bf_program.to_string())?;
+        } else {
+            println!("{bf_program}");
+        }
     }
-    let final_state = match args.execute_mode {
-        ExecuteMode::Ir => program.execute(),
-        ExecuteMode::Bf => Program::execute_bf(&bf_code),
-        ExecuteMode::None => return Ok(()),
-    };
-    if args.print_final_memory {
-        println!("final memory state:\n{final_state}");
+    if let Some(run_options) = run_options {
+        let final_state = match run_options.stage {
+            Stage::Ir => ir_program.execute(),
+            Stage::Bf => bf_program.execute(),
+        };
+        if run_options.print_memory {
+            println!("final memory state:\n{final_state}");
+        }
     }
     Ok(())
 }

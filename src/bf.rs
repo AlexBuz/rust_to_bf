@@ -1,20 +1,18 @@
 use {
-    crate::{
-        common::debug_println,
-        ir::{
-            DirectPlace::{self, *},
-            IndirectPlace::{self, *},
-            Instruction::{self, *},
-            MemoryState,
-            Place::{self, *},
-            Program, StoreMode,
-            Value::*,
-        },
+    crate::ir::{
+        self,
+        DirectPlace::{self, *},
+        IndirectPlace::{self, *},
+        MemoryState,
+        Place::{self, *},
+        StoreMode,
+        Value::*,
     },
     std::{
-        borrow::Cow,
         io::{Read, Write},
+        iter::repeat,
     },
+    velcro::{iter, vec},
 };
 
 /*
@@ -32,285 +30,334 @@ memory layout: [
 */
 
 impl DirectPlace {
-    pub fn path_to_and_from(&self) -> (String, Cow<'static, str>) {
+    fn path_to_and_from(&self) -> (Vec<Instruction>, Vec<Instruction>) {
         match *self {
             StackFrame { offset } => {
-                let sb_to_place = format!("8>[8>]<<{}", "8>".repeat(offset));
-                let place_to_sb = format!("{}6<[8<]", "8<".repeat(offset));
-                (sb_to_place, Cow::Owned(place_to_sb))
+                let sb_to_place = vec![Right(8), Loop(vec![Right(8)]), Left(2), Right(8 * offset)];
+                let place_to_sb = vec![Left(8 * offset + 6), Loop(vec![Left(8)])];
+                (sb_to_place, place_to_sb)
             }
             Address(address) => {
-                let sb_to_place = ">>".repeat(2 * address + 1);
-                let place_to_sb = "<<".repeat(2 * address + 1);
-                (sb_to_place, Cow::Owned(place_to_sb))
+                let sb_to_place = vec![Right(4 * address + 2)];
+                let place_to_sb = vec![Left(4 * address + 2)];
+                (sb_to_place, place_to_sb)
             }
         }
     }
 
-    pub fn convert_load_to_bf(&self, output: &mut String, multiplier: usize) {
+    fn emit_load(&self, output: &mut Vec<Instruction>, multiplier: usize) {
         let (sb_to_src, src_to_sb) = self.path_to_and_from();
 
         // go to the source cell
-        output.push_str(&sb_to_src);
+        output.extend(sb_to_src.iter().cloned());
 
         // use temp cell to preserve the value
-        output.push_str("[-<+>]");
+        output.push(Loop(vec![Sub(1), Left(1), Add(1), Right(1)]));
 
         // copy the value to reg0
-        output.push_str(&format!(
-            "<[->+{src_to_sb}<<{}>>{sb_to_src}<]>",
-            "+".repeat(multiplier)
-        ));
+        output.extend([
+            Left(1),
+            Loop(vec![
+                Sub(1),
+                Right(1),
+                Add(1),
+                ..src_to_sb.iter().cloned(),
+                Left(2),
+                Add(multiplier as _),
+                Right(2),
+                ..sb_to_src.iter().cloned(),
+                Left(1),
+            ]),
+            Right(1),
+        ]);
 
         // go back to the stack base
-        output.push_str(&src_to_sb);
+        output.extend(src_to_sb);
     }
 
-    pub fn convert_store_to_bf(&self, output: &mut String, mode: StoreMode) {
+    fn emit_store(&self, output: &mut Vec<Instruction>, mode: StoreMode) {
         let (sb_to_dst, dst_to_sb) = self.path_to_and_from();
 
         let operator = match mode {
-            StoreMode::Add => "+",
-            StoreMode::Subtract => "-",
+            StoreMode::Add => Add(1),
+            StoreMode::Subtract => Sub(1),
             StoreMode::Replace => {
-                output.push_str(&sb_to_dst);
-                output.push_str("[-]");
-                output.push_str(&dst_to_sb);
-                "+"
+                output.extend(iter![
+                    ..sb_to_dst.iter().cloned(),
+                    Loop(vec![Sub(1)]),
+                    ..dst_to_sb.iter().cloned(),
+                ]);
+                Add(1)
             }
         };
 
         // go to reg0
-        output.push_str("<<");
+        output.push(Left(2));
 
         // move the value to the destination cell
-        output.push_str(&format!("[->>{sb_to_dst}{operator}{dst_to_sb}<<]"));
+        output.push(Loop(vec![
+            Sub(1),
+            Right(2),
+            ..sb_to_dst,
+            operator,
+            ..dst_to_sb,
+            Left(2),
+        ]));
 
         // go back to the stack base
-        output.push_str(">>");
-    }
-
-    pub fn write_bf_symbols(&self, output: &mut String, symbols: &str) {
-        let (sb_to_dst, dst_to_sb) = self.path_to_and_from();
-
-        output.push_str(&sb_to_dst);
-        output.push_str(symbols);
-        output.push_str(&dst_to_sb);
+        output.push(Right(2));
     }
 }
 
-static MEM_CELL_TO_SB: &str = "3<[4<]>";
-static SB_TO_MEM_CELL: &str = "3>[4>]<";
-
 impl IndirectPlace {
-    pub fn path_to_and_from(&self) -> (String, Cow<'static, str>) {
+    fn path_to_and_from(&self) -> (Vec<Instruction>, Vec<Instruction>) {
         match self {
             Deref { address } => {
-                let mut sb_to_place = String::new();
+                let mut sb_to_place = vec![];
 
                 // put the address in reg0
-                address.convert_load_to_bf(&mut sb_to_place, 1);
+                address.emit_load(&mut sb_to_place, 1);
 
                 // leave a trail of mem markers up to the desired location
-                sb_to_place.push_str("<<");
-                sb_to_place.push_str("[-5>+5<]");
-                sb_to_place.push_str("5>");
-                sb_to_place.push_str("[-[-4>+4<]+4>]<");
+                sb_to_place.extend([
+                    Left(2),
+                    Loop(vec![Sub(1), Right(5), Add(1), Left(5)]),
+                    Right(5),
+                    Loop(vec![
+                        Sub(1),
+                        Loop(vec![Sub(1), Right(4), Add(1), Left(4)]),
+                        Add(1),
+                        Right(4),
+                    ]),
+                    Left(1),
+                ]);
 
                 // clear the trail of mem markers and go back to the stack base
-                let place_to_sb = "3<[-4<]>";
+                let place_to_sb = vec![Left(3), Loop(vec![Sub(1), Left(4)]), Right(1)];
 
-                (sb_to_place, Cow::Borrowed(place_to_sb))
+                (sb_to_place, place_to_sb)
             }
         }
     }
 
-    pub fn convert_load_to_bf(&self, output: &mut String, multiplier: usize) {
+    fn emit_load(&self, output: &mut Vec<Instruction>, multiplier: usize) {
         match self {
             Deref { .. } => {
                 let (sb_to_place, place_to_sb) = self.path_to_and_from();
 
                 // go to the source cell
-                output.push_str(&sb_to_place);
+                output.extend(sb_to_place.iter().cloned());
 
                 // use temp cell to preserve the value
-                output.push_str("[-<+>]");
+                output.push(Loop(vec![Sub(1), Left(1), Add(1), Right(1)]));
 
                 // copy the value to reg0
-                output.push_str(&format!(
-                    "<[->+{MEM_CELL_TO_SB}<<{}>>{SB_TO_MEM_CELL}<]>",
-                    "+".repeat(multiplier)
-                ));
+                output.extend([
+                    Left(1),
+                    Loop(vec![
+                        Sub(1),
+                        Right(1),
+                        Add(1),
+                        Left(3),
+                        Loop(vec![Left(4)]),
+                        Left(1),
+                        Add(multiplier as _),
+                        Right(5),
+                        Loop(vec![Right(4)]),
+                        Left(2),
+                    ]),
+                    Right(1),
+                ]);
 
                 // go back to the stack base
-                output.push_str(&place_to_sb);
+                output.extend(place_to_sb);
             }
         }
     }
 
-    pub fn convert_store_to_bf(&self, output: &mut String, mode: StoreMode) {
+    fn emit_store(&self, output: &mut Vec<Instruction>, mode: StoreMode) {
         match self {
             Deref { .. } => {
                 // move the value from reg0 to reg1 so that reg0 can be used to store the address
-                output.push_str("<<[-<+>]>>");
+                output.extend([
+                    Left(2),
+                    Loop(vec![Sub(1), Left(1), Add(1), Right(1)]),
+                    Right(2),
+                ]);
 
                 let (sb_to_place, place_to_sb) = self.path_to_and_from();
-                output.push_str(&sb_to_place);
+                output.extend(sb_to_place.iter().cloned());
 
                 let operator = match mode {
-                    StoreMode::Add => "+",
-                    StoreMode::Subtract => "-",
+                    StoreMode::Add => Add(1),
+                    StoreMode::Subtract => Sub(1),
                     StoreMode::Replace => {
-                        output.push_str("[-]");
-                        "+"
+                        output.push(Loop(vec![Sub(1)]));
+                        Add(1)
                     }
                 };
 
                 // go to reg1
-                output.push_str(MEM_CELL_TO_SB);
-                output.push_str("<<<");
+                output.extend([Left(3), Loop(vec![Left(4)]), Left(2)]);
 
                 // move the value to the destination cell
-                output.push_str(&format!(
-                    "[->>>{SB_TO_MEM_CELL}{operator}{MEM_CELL_TO_SB}<<<]"
-                ));
+                output.extend([Loop(vec![
+                    Sub(1),
+                    Right(6),
+                    Loop(vec![Right(4)]),
+                    Left(1),
+                    operator,
+                    Left(3),
+                    Loop(vec![Left(4)]),
+                    Left(2),
+                ])]);
 
                 // clear the trail of mem markers and go back to the stack base
-                output.push_str(">>>");
-                output.push_str(SB_TO_MEM_CELL);
-                output.push_str(&place_to_sb);
-            }
-        }
-    }
-
-    pub fn write_bf_symbols(&self, output: &mut String, symbols: &str) {
-        match self {
-            Deref { .. } => {
-                let (sb_to_place, place_to_sb) = self.path_to_and_from();
-
-                output.push_str(&sb_to_place);
-                output.push_str(symbols);
-                output.push_str(&place_to_sb);
+                output.extend([Right(6), Loop(vec![Right(4)]), Left(1)]);
+                output.extend(place_to_sb);
             }
         }
     }
 }
 
 impl Place {
-    pub fn convert_load_to_bf(&self, output: &mut String, multiplier: usize) {
-        match self {
-            Direct(direct) => direct.convert_load_to_bf(output, multiplier),
-            Indirect(indirect) => indirect.convert_load_to_bf(output, multiplier),
-        }
-    }
-
-    pub fn convert_load_ref_to_bf(&self, output: &mut String) {
-        match *self {
-            Direct(direct) => match direct {
-                StackFrame { offset } => {
-                    // leave a trail of mem markers up to the frame base
-                    output.push_str("8>[<+9>]");
-
-                    // count the mem markers (while clearing them) and put the result in reg1
-                    output.push_str("8<[<[-8<+8>]7<]");
-
-                    // put the frame base address (2 * reg1 + 1) in reg0, and clear reg1
-                    output.push_str("<[-<++>]<+");
-
-                    // add the offset to the frame base address
-                    output.push_str(&"++".repeat(offset));
-
-                    // go back to the stack base
-                    output.push_str(">>");
-                }
-                Address(address) => {
-                    output.push_str("<<");
-                    output.push_str(&"+".repeat(address));
-                    output.push_str(">>");
-                }
-            },
-            Indirect(indirect) => match indirect {
-                Deref { address } => address.convert_load_to_bf(output, 1),
-            },
-        }
-    }
-
-    pub fn convert_store_to_bf(&self, output: &mut String, mode: StoreMode) {
-        match self {
-            Direct(direct) => direct.convert_store_to_bf(output, mode),
-            Indirect(indirect) => indirect.convert_store_to_bf(output, mode),
-        }
-    }
-
-    pub fn write_bf_symbols(&self, output: &mut String, symbols: &str) {
-        match self {
-            Direct(direct) => direct.write_bf_symbols(output, symbols),
-            Indirect(indirect) => indirect.write_bf_symbols(output, symbols),
-        }
-    }
-
-    pub fn path_to_and_from(&self) -> (String, Cow<'static, str>) {
+    fn path_to_and_from(&self) -> (Vec<Instruction>, Vec<Instruction>) {
         match self {
             Direct(direct) => direct.path_to_and_from(),
             Indirect(indirect) => indirect.path_to_and_from(),
         }
     }
+
+    fn emit_load(&self, output: &mut Vec<Instruction>, multiplier: usize) {
+        match self {
+            Direct(direct) => direct.emit_load(output, multiplier),
+            Indirect(indirect) => indirect.emit_load(output, multiplier),
+        }
+    }
+
+    fn emit_store(&self, output: &mut Vec<Instruction>, mode: StoreMode) {
+        match self {
+            Direct(direct) => direct.emit_store(output, mode),
+            Indirect(indirect) => indirect.emit_store(output, mode),
+        }
+    }
+
+    fn emit_load_ref(&self, output: &mut Vec<Instruction>) {
+        match *self {
+            Direct(direct) => match direct {
+                StackFrame { offset } => {
+                    // leave a trail of mem markers up to the frame base
+                    output.extend([Right(8), Loop(vec![Left(1), Add(1), Right(9)])]);
+
+                    // count the mem markers (while clearing them) and put the result in reg1
+                    output.extend([
+                        Left(8),
+                        Loop(vec![
+                            Left(1),
+                            Loop(vec![Sub(1), Left(8), Add(1), Right(8)]),
+                            Left(7),
+                        ]),
+                    ]);
+
+                    // put the frame base address (2 * reg1 + 1) in reg0, and clear reg1
+                    output.extend([
+                        Left(1),
+                        Loop(vec![Sub(1), Left(1), Add(2), Right(1)]),
+                        Left(1),
+                        Add(1),
+                    ]);
+
+                    // add the offset to the frame base address
+                    output.push(Add((2 * offset) as _));
+
+                    // go back to the stack base
+                    output.push(Right(2));
+                }
+                Address(address) => output.extend([Left(2), Add(address as _), Right(2)]),
+            },
+            Indirect(indirect) => match indirect {
+                Deref { address } => address.emit_load(output, 1),
+            },
+        }
+    }
+
+    fn emit_bf(
+        &self,
+        output: &mut Vec<Instruction>,
+        instructions: impl IntoIterator<Item = Instruction>,
+    ) {
+        let (sb_to_place, place_to_sb) = self.path_to_and_from();
+        output.extend(sb_to_place);
+        output.extend(instructions);
+        output.extend(place_to_sb);
+    }
 }
 
-impl Instruction {
-    fn convert_to_bf(&self, output: &mut String) {
+fn compile_sandwich(
+    mut before: Vec<Instruction>,
+    instructions: &[ir::Instruction],
+    after: impl IntoIterator<Item = Instruction>,
+) -> Vec<Instruction> {
+    for instr in instructions {
+        instr.convert_to_bf(&mut before);
+    }
+    before.extend(after);
+    before
+}
+
+impl ir::Instruction {
+    fn convert_to_bf(&self, output: &mut Vec<Instruction>) {
         // pointer should be at the stack base before and after each instruction
         match *self {
-            Load { src, multiplier } => {
-                src.convert_load_to_bf(output, multiplier);
-            }
-            LoadRef { src } => {
-                src.convert_load_ref_to_bf(output);
-            }
-            Store { dst, store_mode } => {
-                dst.convert_store_to_bf(output, store_mode);
-            }
-            StoreImm {
+            ir::Instruction::Load { src, multiplier } => src.emit_load(output, multiplier),
+            ir::Instruction::LoadRef { src } => src.emit_load_ref(output),
+            ir::Instruction::Store { dst, store_mode } => dst.emit_store(output, store_mode),
+            ir::Instruction::StoreImm {
                 dst,
                 value,
                 store_mode,
-            } => {
-                dst.write_bf_symbols(
-                    output,
-                    &match store_mode {
-                        StoreMode::Add => "+".repeat(value),
-                        StoreMode::Subtract => "-".repeat(value),
-                        StoreMode::Replace => format!("[-]{}", "+".repeat(value)),
-                    },
-                );
-            }
-            SaveFrame { size } => {
+            } => match store_mode {
+                StoreMode::Add => dst.emit_bf(output, iter![Add(value as _)]),
+                StoreMode::Subtract => dst.emit_bf(output, iter![Sub(value as _)]),
+                StoreMode::Replace => {
+                    dst.emit_bf(output, iter![Loop(vec![Sub(1)]), Add(value as _)])
+                }
+            },
+            ir::Instruction::SaveFrame { size } => {
                 if size > 0 {
-                    output.push_str("8>[8>]+");
-                    output.push_str(&"8>+".repeat(size - 1));
-                    output.push_str("[8<]");
+                    output.extend(iter![
+                        Right(8),
+                        Loop(vec![Right(8)]),
+                        Add(1),
+                        ..repeat([Right(8), Add(1)]).take(size - 1).flatten(),
+                        Loop(vec![Left(8)]),
+                    ]);
                 }
             }
-            RestoreFrame { size } => {
+            ir::Instruction::RestoreFrame { size } => {
                 if size > 0 {
-                    output.push_str("8>[8>]8<");
-                    output.push_str(&"-8<".repeat(size));
-                    output.push_str("[8<]");
+                    output.extend(iter![
+                        Right(8),
+                        Loop(vec![Right(8)]),
+                        Left(8),
+                        ..repeat([Sub(1), Left(8)]).take(size).flatten(),
+                        Loop(vec![Left(8)]),
+                    ]);
                 }
             }
-            While { cond, ref body } => {
+            ir::Instruction::While { cond, ref body } => {
                 let (sb_to_cond, cond_to_sb) = cond.path_to_and_from();
-                output.push_str(&sb_to_cond);
-                output.push('[');
-                output.push_str(&cond_to_sb);
-                for instr in body {
-                    instr.convert_to_bf(output);
-                }
-                output.push_str(&sb_to_cond);
-                output.push(']');
-                output.push_str(&cond_to_sb);
+                output.extend(iter![
+                    ..sb_to_cond.iter().cloned(),
+                    Loop(compile_sandwich(
+                        cond_to_sb.clone(),
+                        body,
+                        sb_to_cond.iter().cloned(),
+                    )),
+                    ..cond_to_sb,
+                ]);
             }
-            Switch {
+            ir::Instruction::Switch {
                 cond,
                 ref cases,
                 ref default,
@@ -320,140 +367,160 @@ impl Instruction {
                         instr.convert_to_bf(output);
                     }
                 } else {
-                    cond.convert_load_to_bf(output, 1);
+                    cond.emit_load(output, 1);
                     if cases.iter().all(Vec::is_empty) {
                         // optimization for switches that express `if x > some_literal { ... do stuff ...  } else { do nothing }`
                         // note that it's safe to subtract 1 from cases.len() because we know cases is nonempty at this point
-                        output.push_str("<<[");
-                        output.push_str(&"-[".repeat(cases.len() - 1));
-                        output.push_str("[-]>>");
-                        for instr in default {
-                            instr.convert_to_bf(output);
+                        /*
+                        <<
+                        [
+                            -[
+                                -[
+                                    [-]>> default <<
+                                ]
+                            ]
+                        ]>>
+                        */
+                        let mut body = compile_sandwich(
+                            vec![Loop(vec![Sub(1)]), Right(2)],
+                            default,
+                            iter![Left(2)],
+                        );
+                        for _ in 1..cases.len() {
+                            body = vec![Sub(1), Loop(body)];
                         }
-                        output.push_str("<<");
-                        output.push_str(&"]".repeat(cases.len() - 1));
-                        output.push_str("]>>");
+                        output.extend(iter![Left(2), Loop(body), Right(2)]);
                     } else {
-                        output.push_str("<<<+>[");
-                        output.push_str(&"-[".repeat(cases.len() - 1));
-                        output.push_str("[-]<->>>");
-                        for instr in default {
-                            instr.convert_to_bf(output);
-                        }
-                        output.push_str("<<");
+                        /*
+                        <<<+>
+                        [
+                            -[
+                                -[
+                                    [-]<->>> default <<
+                                ]<[->>> case 2 <<<]>
+                            ]<[->>> case 1 <<<]>
+                        ]<[->>> case 0 <<<]>
+                        >>
+                        */
+                        let mut body = compile_sandwich(
+                            vec![Loop(vec![Sub(1)]), Left(1), Sub(1), Right(3)],
+                            default,
+                            iter![Left(2)],
+                        );
                         for case in cases.iter().rev() {
-                            output.push_str("]<[->>>");
-                            for instr in case {
-                                instr.convert_to_bf(output);
-                            }
-                            output.push_str("<<<]>");
+                            body = vec![
+                                Sub(1),
+                                Loop(body),
+                                Left(1),
+                                Loop(compile_sandwich(
+                                    vec![Sub(1), Right(3)],
+                                    case,
+                                    iter![Left(3)],
+                                )),
+                                Right(1),
+                            ];
                         }
-                        output.push_str(">>");
+                        output.extend(iter![
+                            Left(3),
+                            Add(1),
+                            Right(1),
+                            ..body.into_iter().skip(1),
+                            Right(2),
+                        ]);
                     }
                 }
             }
-            Input { dst } => {
-                dst.write_bf_symbols(output, ",");
-            }
-            Output { src } => match src {
+            ir::Instruction::Input { dst } => dst.emit_bf(output, iter![Input]),
+            ir::Instruction::Output { src } => match src {
                 Immediate(value) => {
                     // put the value in reg0, print it, clear reg0, and go back to the stack base
-                    output.push_str(&format!("<<{}.[-]>>", "+".repeat(value)));
+                    output.extend(iter![
+                        Left(2),
+                        Add(value as _),
+                        Output,
+                        Loop(vec![Sub(1)]),
+                        Right(2)
+                    ]);
                 }
-                At(src) => {
-                    src.write_bf_symbols(output, ".");
-                }
+                At(src) => src.emit_bf(output, iter![Output]),
             },
         }
     }
 }
 
-type Cell = usize;
+type CellInt = usize;
 
-fn execute_bf(bf_code: &str) -> Vec<Cell> {
-    let mut tape = vec![0];
-    let mut ptr = 0;
-    let mut i = 0;
-    let mut stdout = std::io::stdout().lock();
-    let mut stdin = std::io::stdin().lock();
-    let mut executed_count = 0;
-    while i < bf_code.len() {
-        executed_count += 1;
-        match bf_code.chars().nth(i).unwrap() {
-            '>' => {
-                ptr += 1;
-                if ptr == tape.len() {
-                    tape.push(0);
+#[derive(Debug, Clone)]
+enum Instruction {
+    Right(usize),
+    Left(usize),
+    Add(CellInt),
+    Sub(CellInt),
+    Input,
+    Output,
+    Loop(Vec<Instruction>),
+}
+use Instruction::*;
+
+impl Instruction {
+    fn execute(
+        &self,
+        tape: &mut Vec<CellInt>,
+        ptr: &mut usize,
+        stdin: &mut std::io::StdinLock,
+        stdout: &mut std::io::StdoutLock,
+    ) {
+        match *self {
+            Right(amount) => {
+                let new_ptr = *ptr + amount;
+                if new_ptr >= tape.len() {
+                    tape.resize(new_ptr + 1, 0);
                 }
+                *ptr = new_ptr;
             }
-            '<' => ptr -= 1,
-            '+' => tape[ptr] += 1,
-            '-' => tape[ptr] -= 1,
-            '.' => {
-                stdout.write_all(&[tape[ptr] as _]).unwrap();
+            Left(amount) => *ptr -= amount,
+            Add(amount) => tape[*ptr] = tape[*ptr].wrapping_add(amount),
+            Sub(amount) => tape[*ptr] = tape[*ptr].wrapping_sub(amount),
+            Output => {
+                stdout.write_all(&[tape[*ptr] as _]).unwrap();
                 stdout.flush().unwrap();
             }
-            ',' => {
+            Input => {
                 let mut buf = [0u8];
                 stdin.read_exact(&mut buf).unwrap();
-                tape[ptr] = Cell::from(buf[0]);
+                tape[*ptr] = CellInt::from(buf[0]);
             }
-            '[' => {
-                if tape[ptr] == 0 {
-                    let mut depth = 1;
-                    while depth > 0 {
-                        i += 1;
-                        match bf_code.chars().nth(i).unwrap() {
-                            '[' => depth += 1,
-                            ']' => depth -= 1,
-                            _ => {}
-                        }
+            Loop(ref body) => {
+                while tape[*ptr] != 0 {
+                    for instr in body {
+                        instr.execute(tape, ptr, stdin, stdout);
                     }
                 }
             }
-            ']' => {
-                if tape[ptr] != 0 {
-                    let mut depth = 1;
-                    while depth > 0 {
-                        i -= 1;
-                        match bf_code.chars().nth(i).unwrap() {
-                            '[' => depth -= 1,
-                            ']' => depth += 1,
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            _ => {}
         }
-        i += 1;
     }
-    debug_println!("# of instructions executed: {}", executed_count);
-    tape
+}
+
+pub struct Program {
+    instructions: Vec<Instruction>,
 }
 
 impl Program {
-    pub fn convert_to_bf(&self) -> String {
-        // go to the stack base (i.e., past reg1, reg0, and mem_base)
-        let mut output = String::from(">>>");
-        for instr in &self.instructions {
-            instr.convert_to_bf(&mut output);
+    pub fn execute(&self) -> MemoryState {
+        let mut tape = vec![0];
+        let mut ptr = 0;
+        let mut i = 0;
+        let mut stdin = std::io::stdin().lock();
+        let mut stdout = std::io::stdout().lock();
+        while i < self.instructions.len() {
+            self.instructions[i].execute(&mut tape, &mut ptr, &mut stdin, &mut stdout);
+            i += 1;
         }
-        // TODO: Use a proper BFInstruction enum instead of doing crazy stuff like this:
-        for i in (3..10).rev() {
-            output = output.replace(&format!("{i}<"), &"<".repeat(i));
-            output = output.replace(&format!("{i}>"), &">".repeat(i));
-        }
-        output
-    }
-
-    pub fn execute_bf(bf_code: &str) -> MemoryState {
-        let mut tape = execute_bf(bf_code);
         while tape.len() % 8 != 4 {
             tape.push(0);
         }
-        let mut stack = Vec::<usize>::new();
-        let mut heap = Vec::<usize>::new();
+        let mut stack = vec![];
+        let mut heap = vec![];
         assert_eq!(tape[0], 0); // reg1
         assert_eq!(tape[2], 0); // mem_base
         assert_eq!(tape[3], 0); // stack_base
@@ -472,10 +539,63 @@ impl Program {
             frame_base += stack_j_marker;
         }
         MemoryState {
-            frame_base,
-            reg: tape[1],
+            frame_base: frame_base as _,
+            reg: tape[1] as _,
             stack,
             heap,
         }
+    }
+}
+
+impl From<&ir::Program> for Program {
+    fn from(program: &ir::Program) -> Self {
+        Self {
+            instructions: compile_sandwich(
+                vec![Instruction::Right(3)], // start at the stack base
+                &program.instructions,
+                [],
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for Program {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        fn helper(f: &mut std::fmt::Formatter, instructions: &[Instruction]) -> std::fmt::Result {
+            use std::fmt::Write;
+            for instr in instructions {
+                match *instr {
+                    Instruction::Right(amount) => {
+                        for _ in 0..amount {
+                            f.write_char('>')?;
+                        }
+                    }
+                    Instruction::Left(amount) => {
+                        for _ in 0..amount {
+                            f.write_char('<')?;
+                        }
+                    }
+                    Instruction::Add(amount) => {
+                        for _ in 0..amount {
+                            f.write_char('+')?;
+                        }
+                    }
+                    Instruction::Sub(amount) => {
+                        for _ in 0..amount {
+                            f.write_char('-')?;
+                        }
+                    }
+                    Instruction::Input => f.write_char(',')?,
+                    Instruction::Output => f.write_char('.')?,
+                    Instruction::Loop(ref body) => {
+                        f.write_char('[')?;
+                        helper(f, body)?;
+                        f.write_char(']')?;
+                    }
+                }
+            }
+            Ok(())
+        }
+        helper(f, &self.instructions)
     }
 }
