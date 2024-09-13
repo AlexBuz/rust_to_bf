@@ -186,7 +186,7 @@ fn print_int(mut num: usize) {
         0 => {}
         _ => print_int(quotient),
     }
-    remainder += 48;
+    remainder += '0' as usize;
     print_char!(remainder as char);
 }
 
@@ -194,7 +194,10 @@ fn read_int() -> usize {
     let mut num = 0;
     loop {
         let mut c = read_char!() as usize;
-        c -= 48;
+        if c < '0' as usize {
+            return num;
+        }
+        c -= '0' as usize;
         if c > 9 {
             return num;
         }
