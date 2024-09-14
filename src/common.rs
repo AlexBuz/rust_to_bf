@@ -1,6 +1,10 @@
+use std::sync::atomic::AtomicBool;
+
+pub(crate) static DEBUG: AtomicBool = AtomicBool::new(false);
+
 macro_rules! debug_print {
     ($($arg:tt)*) => {
-        if $crate::DEBUG.load($crate::Ordering::Relaxed) {
+        if $crate::common::DEBUG.load(::std::sync::atomic::Ordering::Relaxed) {
             print!($($arg)*);
         }
     };
@@ -8,7 +12,7 @@ macro_rules! debug_print {
 
 macro_rules! debug_println {
     ($($arg:tt)*) => {
-        if $crate::DEBUG.load($crate::Ordering::Relaxed) {
+        if $crate::common::DEBUG.load(::std::sync::atomic::Ordering::Relaxed) {
             println!($($arg)*);
         }
     };

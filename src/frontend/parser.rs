@@ -1,5 +1,5 @@
 use {
-    crate::{ast::*, lexer::Token},
+    super::{ast::*, lexer::Token},
     chumsky::prelude::{Parser as _, *},
 };
 

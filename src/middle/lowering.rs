@@ -1,5 +1,5 @@
 use {
-    crate::{ast, ir},
+    crate::{frontend::ast, middle::ir},
     std::{cmp::Ordering, collections::BTreeMap, sync::LazyLock},
 };
 
@@ -1473,7 +1473,7 @@ fn compile_func<'src>(name: &'src str, global_state: &mut GlobalState<'src>) -> 
 }
 
 static STD: LazyLock<ast::Ast> = LazyLock::new(|| {
-    let src = include_str!("std.bs");
+    let src = include_str!("std.rs");
     let mut ast = ast::Ast::try_from(src).expect("failed to parse standard library");
     for item in &mut ast.items {
         let ast::Item::FuncDef { name, .. } = item else {
@@ -1624,7 +1624,7 @@ struct StructDef<'src> {
     fields: Vec<Field<'src>>,
 }
 
-pub fn compile(ast: &ast::Ast) -> ir::Program {
+pub(super) fn lower(ast: &ast::Ast) -> ir::Program {
     let mut func_defs = BTreeMap::<&str, FuncDef>::new();
     let mut struct_defs = BTreeMap::<&str, StructDef>::new();
 

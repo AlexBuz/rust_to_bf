@@ -1,8 +1,3 @@
-use {
-    crate::{lexer, parser},
-    chumsky::prelude::*,
-};
-
 #[derive(Debug, Clone)]
 pub enum Place<'src> {
     Var(&'src str),
@@ -135,11 +130,6 @@ pub enum Type<'src> {
         mutable: bool,
         ty: Box<Type<'src>>,
     },
-    // TODO: support function types
-    // Func {
-    //     param_tys: Vec<Type>,
-    //     ret_ty: Box<Type>,
-    // }
 }
 
 impl Default for Type<'_> {
@@ -211,28 +201,4 @@ pub enum Item<'src> {
 #[derive(Debug, Clone)]
 pub struct Ast<'src> {
     pub items: Vec<Item<'src>>,
-}
-
-impl<'src> TryFrom<&'src str> for Ast<'src> {
-    type Error = anyhow::Error;
-
-    fn try_from(src: &'src str) -> Result<Self, Self::Error> {
-        let tokens = match lexer::lexer().parse(src).into_result() {
-            Ok(tokens) => tokens,
-            Err(errs) => anyhow::bail!(errs
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")),
-        };
-        let ast = match parser::ast_parser().parse(&tokens).into_result() {
-            Ok(ast) => ast,
-            Err(errs) => anyhow::bail!(errs
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")),
-        };
-        Ok(ast)
-    }
 }
