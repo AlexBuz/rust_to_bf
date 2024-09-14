@@ -1,7 +1,6 @@
 use {
     crate::middle::ir::MemoryState,
     std::io::{Read, Write},
-    Instruction::*,
 };
 
 pub type CellInt = usize;
@@ -26,21 +25,21 @@ impl Instruction {
         stdout: &mut std::io::StdoutLock,
     ) {
         match *self {
-            Right(amount) => {
+            Instruction::Right(amount) => {
                 let new_ptr = *ptr + amount;
                 if new_ptr >= tape.len() {
                     tape.resize(new_ptr + 1, 0);
                 }
                 *ptr = new_ptr;
             }
-            Left(amount) => *ptr -= amount,
-            Add(amount) => tape[*ptr] = tape[*ptr].wrapping_add(amount),
-            Sub(amount) => tape[*ptr] = tape[*ptr].wrapping_sub(amount),
-            Output => {
+            Instruction::Left(amount) => *ptr -= amount,
+            Instruction::Add(amount) => tape[*ptr] = tape[*ptr].wrapping_add(amount),
+            Instruction::Sub(amount) => tape[*ptr] = tape[*ptr].wrapping_sub(amount),
+            Instruction::Output => {
                 stdout.write_all(&[tape[*ptr] as _]).unwrap();
                 stdout.flush().unwrap();
             }
-            Input => {
+            Instruction::Input => {
                 let mut buf = [0u8];
                 if let Err(e) = stdin.read_exact(&mut buf) {
                     let std::io::ErrorKind::UnexpectedEof = e.kind() else {
@@ -49,10 +48,10 @@ impl Instruction {
                 }
                 tape[*ptr] = CellInt::from(buf[0]);
             }
-            Loop(ref body) => {
+            Instruction::Loop(ref body) => {
                 while tape[*ptr] != 0 {
-                    for instr in body {
-                        instr.execute(tape, ptr, stdin, stdout);
+                    for instruction in body {
+                        instruction.execute(tape, ptr, stdin, stdout);
                     }
                 }
             }
@@ -68,8 +67,8 @@ impl std::fmt::Display for Program {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         fn helper(f: &mut std::fmt::Formatter, instructions: &[Instruction]) -> std::fmt::Result {
             use std::fmt::Write;
-            for instr in instructions {
-                match *instr {
+            for instruction in instructions {
+                match *instruction {
                     Instruction::Right(amount) => {
                         for _ in 0..amount {
                             f.write_char('>')?;
