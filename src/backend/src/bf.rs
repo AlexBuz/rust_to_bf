@@ -1,5 +1,5 @@
 use {
-    crate::middle::ir::MemoryState,
+    middle::ir::MemoryState,
     std::io::{Read, Write},
 };
 

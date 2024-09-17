@@ -1,15 +1,11 @@
 use {
     super::{ast::*, lexer::Token},
-    chumsky::prelude::{Parser as _, *},
+    chumsky::prelude::{Parser as ChumskyParser, *},
 };
 
-pub trait Parser<'tokens, 'src: 'tokens, Output>:
-    chumsky::prelude::Parser<
-        'tokens,
-        &'tokens [Token<'src>],
-        Output,
-        extra::Err<Rich<'tokens, Token<'src>>>,
-    > + Clone
+pub(super) trait Parser<'tokens, 'src: 'tokens, Output>:
+    ChumskyParser<'tokens, &'tokens [Token<'src>], Output, extra::Err<Rich<'tokens, Token<'src>>>>
+    + Clone
     + 'tokens
 {
 }
@@ -17,7 +13,7 @@ impl<
         'tokens,
         'src: 'tokens,
         Output,
-        T: chumsky::prelude::Parser<
+        T: ChumskyParser<
                 'tokens,
                 &'tokens [Token<'src>],
                 Output,
@@ -554,7 +550,7 @@ fn item_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, Item<'src
     func_def_parser().or(struct_def_parser())
 }
 
-pub fn ast_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, Ast<'src>> {
+pub(super) fn ast_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, Ast<'src>> {
     item_parser()
         .repeated()
         .collect()

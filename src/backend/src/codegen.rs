@@ -1,6 +1,6 @@
 use {
     super::bf::{self, Instruction::*},
-    crate::middle::ir,
+    middle::ir,
     std::iter::repeat,
     velcro::{iter, vec},
 };

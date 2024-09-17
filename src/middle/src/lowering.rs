@@ -1,5 +1,6 @@
 use {
-    crate::{frontend::ast, middle::ir},
+    super::ir,
+    frontend::ast,
     std::{cmp::Ordering, collections::BTreeMap, sync::LazyLock},
 };
 

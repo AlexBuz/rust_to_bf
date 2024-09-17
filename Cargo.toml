@@ -4,8 +4,22 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.88"
-chumsky = "1.0.0-alpha.7"
+anyhow = { workspace = true }
+backend = { workspace = true }
 clap = { version = "4.5.17", features = ["derive"] }
+frontend = { workspace = true }
+middle = { workspace = true }
+
+[workspace]
+members = [
+    "src/backend",
+    "src/frontend",
+    "src/middle",
+]
+
+[workspace.dependencies]
+anyhow = "1.0.89"
+backend = { path = "src/backend" }
 derive_more = { version = "1.0.0", features = ["display", "from"] }
-velcro = "0.5.4"
+frontend = { path = "src/frontend" }
+middle = { path = "src/middle" }

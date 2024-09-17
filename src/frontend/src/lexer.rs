@@ -1,16 +1,16 @@
 use {
-    chumsky::prelude::{Parser as _, *},
+    chumsky::prelude::{Parser as ChumskyParser, *},
     derive_more::Display,
 };
 
-pub trait Parser<'src, Output>:
-    chumsky::prelude::Parser<'src, &'src str, Output, extra::Err<Rich<'src, char>>> + Clone
+pub(super) trait Parser<'src, Output>:
+    ChumskyParser<'src, &'src str, Output, extra::Err<Rich<'src, char>>> + Clone
 {
 }
 impl<
         'src,
         Output,
-        T: chumsky::prelude::Parser<'src, &'src str, Output, extra::Err<Rich<'src, char>>> + Clone,
+        T: ChumskyParser<'src, &'src str, Output, extra::Err<Rich<'src, char>>> + Clone,
     > Parser<'src, Output> for T
 {
 }
@@ -257,7 +257,7 @@ fn comment_lexer<'src>() -> impl Parser<'src, ()> {
     just("//").then(none_of('\n').repeated()).padded().ignored()
 }
 
-pub fn lexer<'src>() -> impl Parser<'src, Vec<Token<'src>>> {
+pub(super) fn lexer<'src>() -> impl Parser<'src, Vec<Token<'src>>> {
     token_lexer()
         .padded_by(comment_lexer().repeated())
         .padded()

@@ -1,0 +1,9 @@
+[package]
+name = "frontend"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+chumsky = "=1.0.0-alpha.7"
+derive_more = { workspace = true }

@@ -1,14 +1,8 @@
-use {
-    crate::common::{indented_print, indented_println},
-    derive_more::Display,
-    std::io::{Read, Write},
-};
+use std::io::{Read, Write};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirectPlace {
-    #[display("stack_frame[{}]", offset)]
     StackFrame { offset: usize },
-    #[display("*{_0}")]
     Address(usize),
 }
 
@@ -45,9 +39,8 @@ impl DirectPlace {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndirectPlace {
-    #[display("*{address}")]
     Deref { address: DirectPlace },
 }
 
@@ -63,7 +56,7 @@ impl IndirectPlace {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place {
     Direct(DirectPlace),
     Indirect(IndirectPlace),
@@ -85,7 +78,7 @@ impl Place {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Value {
     Immediate(usize),
     At(Place),
@@ -100,13 +93,10 @@ impl Value {
     }
 }
 
-#[derive(Debug, Clone, Copy, Display)]
+#[derive(Debug, Clone, Copy)]
 pub enum StoreMode {
-    #[display("+=")]
     Add,
-    #[display("-=")]
     Subtract,
-    #[display("=")]
     Replace,
 }
 
@@ -153,21 +143,14 @@ pub enum Instruction {
 }
 
 impl Instruction {
-    pub fn execute(&self, state: &mut MemoryState, depth: usize) {
+    pub fn execute(&self, state: &mut MemoryState) {
         match *self {
             Instruction::Load {
                 ref src,
                 multiplier,
-            } => {
-                indented_println!(depth, "reg += {multiplier} * {src};");
-                state.reg += multiplier * *src.resolve(state);
-            }
-            Instruction::LoadRef { ref src } => {
-                indented_println!(depth, "reg += &{src};");
-                state.reg += src.resolve_ref(state)
-            }
+            } => state.reg += multiplier * *src.resolve(state),
+            Instruction::LoadRef { ref src } => state.reg += src.resolve_ref(state),
             Instruction::Store { dst, store_mode } => {
-                indented_println!(depth, "{dst} {store_mode} reg; reg = 0;");
                 let reg = std::mem::take(&mut state.reg);
                 let place = dst.resolve(state);
                 match store_mode {
@@ -181,7 +164,6 @@ impl Instruction {
                 value,
                 store_mode,
             } => {
-                indented_println!(depth, "{dst} {store_mode} {value};");
                 let place = dst.resolve(state);
                 match store_mode {
                     StoreMode::Replace => *place = value,
@@ -190,53 +172,29 @@ impl Instruction {
                 }
             }
             Instruction::SaveFrame { size } => {
-                indented_println!(depth, "stack.grow_by({size});");
                 state.frame_base += size;
                 if state.stack.len() < state.frame_base {
                     state.stack.resize(state.frame_base, 0);
                 }
             }
-            Instruction::RestoreFrame { size } => {
-                indented_println!(depth, "stack.shrink_by({size});");
-                state.frame_base -= size;
-            }
+            Instruction::RestoreFrame { size } => state.frame_base -= size,
             Instruction::While { ref cond, ref body } => {
-                indented_println!(depth, "while {cond} {{");
-                let mut i = 0;
                 while *cond.resolve(state) != 0 {
-                    indented_println!(depth + 1, "iteration {i}: {{");
                     for instruction in body {
-                        instruction.execute(state, depth + 2);
+                        instruction.execute(state);
                     }
-                    indented_println!(depth + 1, "}}");
-                    i += 1;
                 }
-                indented_println!(depth, "}}");
             }
             Instruction::Switch {
                 ref cond,
                 ref cases,
                 ref default,
-            } => {
-                indented_println!(depth, "switch {cond} {{");
-                let case_index = *cond.resolve(state);
-                if case_index < cases.len() {
-                    indented_println!(depth + 1, "case {case_index}: {{");
-                    for instruction in &cases[case_index] {
-                        instruction.execute(state, depth + 2);
-                    }
-                    indented_println!(depth + 1, "}}");
-                } else {
-                    indented_println!(depth + 1, "default: {{");
-                    for instruction in default {
-                        instruction.execute(state, depth + 2);
-                    }
-                    indented_println!(depth + 1, "}}");
-                }
-                indented_println!(depth, "}}");
-            }
+            } => cases
+                .get(*cond.resolve(state))
+                .unwrap_or(default)
+                .iter()
+                .for_each(|instruction| instruction.execute(state)),
             Instruction::Input { dst } => {
-                indented_print!(depth, "{dst} = read_char!(); // ");
                 std::io::stdout().flush().unwrap();
                 let mut stdin = std::io::stdin().lock();
                 let mut buf = [0u8];
@@ -248,18 +206,12 @@ impl Instruction {
                 *dst.resolve(state) = usize::from(buf[0]);
             }
             Instruction::Output { src } => {
-                indented_print!(depth, "print_char!({src}); // ");
                 let mut stdout = std::io::stdout().lock();
                 stdout.flush().unwrap();
                 stdout.write_all(&[src.resolve(state) as u8]).unwrap();
                 stdout.flush().unwrap();
-                indented_println!();
             }
         }
-        indented_println!(depth, "stack: {:?}", state.stack);
-        indented_println!(depth, "frame: {:?}", &state.stack[state.frame_base..]);
-        indented_println!(depth, "heap: {:?}", state.heap);
-        indented_println!();
     }
 }
 
@@ -277,7 +229,7 @@ impl Program {
             heap: vec![],
         };
         for instruction in &self.instructions {
-            instruction.execute(&mut state, 0);
+            instruction.execute(&mut state);
         }
         state
     }
@@ -289,13 +241,4 @@ pub struct MemoryState {
     pub reg: usize,
     pub stack: Vec<usize>,
     pub heap: Vec<usize>,
-}
-
-impl std::fmt::Display for MemoryState {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        writeln!(f, "stack: {:?}", self.stack)?;
-        writeln!(f, "frame: {:?}", &self.stack[self.frame_base..])?;
-        write!(f, "heap: {:?}", self.heap)?;
-        Ok(())
-    }
 }
