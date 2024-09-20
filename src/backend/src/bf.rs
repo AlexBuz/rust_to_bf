@@ -1,5 +1,5 @@
 use {
-    middle::ir::MemoryState,
+    middle::ir::{Execute, MemoryState},
     std::io::{Read, Write},
 };
 
@@ -21,8 +21,8 @@ impl Instruction {
         &self,
         tape: &mut Vec<CellInt>,
         ptr: &mut usize,
-        stdin: &mut std::io::StdinLock,
-        stdout: &mut std::io::StdoutLock,
+        stdin: &mut impl Read,
+        stdout: &mut impl Write,
     ) {
         match *self {
             Instruction::Right(amount) => {
@@ -35,10 +35,6 @@ impl Instruction {
             Instruction::Left(amount) => *ptr -= amount,
             Instruction::Add(amount) => tape[*ptr] = tape[*ptr].wrapping_add(amount),
             Instruction::Sub(amount) => tape[*ptr] = tape[*ptr].wrapping_sub(amount),
-            Instruction::Output => {
-                stdout.write_all(&[tape[*ptr] as _]).unwrap();
-                stdout.flush().unwrap();
-            }
             Instruction::Input => {
                 let mut buf = [0u8];
                 if let Err(e) = stdin.read_exact(&mut buf) {
@@ -47,6 +43,10 @@ impl Instruction {
                     };
                 }
                 tape[*ptr] = CellInt::from(buf[0]);
+            }
+            Instruction::Output => {
+                stdout.write_all(&[tape[*ptr] as _]).unwrap();
+                let _ = stdout.flush();
             }
             Instruction::Loop(ref body) => {
                 while tape[*ptr] != 0 {
@@ -104,16 +104,12 @@ impl std::fmt::Display for Program {
     }
 }
 
-impl Program {
-    pub fn execute(&self) -> MemoryState {
+impl Execute for Program {
+    fn execute(&self, stdin: &mut impl Read, stdout: &mut impl Write) -> MemoryState {
         let mut tape = vec![0];
         let mut ptr = 0;
-        let mut i = 0;
-        let mut stdin = std::io::stdin().lock();
-        let mut stdout = std::io::stdout().lock();
-        while i < self.instructions.len() {
-            self.instructions[i].execute(&mut tape, &mut ptr, &mut stdin, &mut stdout);
-            i += 1;
+        for instruction in &self.instructions {
+            instruction.execute(&mut tape, &mut ptr, stdin, stdout);
         }
         while tape.len() % 8 != 4 {
             tape.push(0);

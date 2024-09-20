@@ -2,7 +2,7 @@ use {
     backend::bf,
     clap::{Parser, Subcommand, ValueEnum},
     frontend::ast::Ast,
-    middle::ir,
+    middle::ir::{self, Execute},
     std::path::PathBuf,
 };
 
@@ -80,9 +80,11 @@ fn main() -> anyhow::Result<()> {
         }
     }
     if let Some(run_options) = run_options {
+        let stdin = &mut std::io::stdin().lock();
+        let stdout = &mut std::io::stdout().lock();
         let final_state = match run_options.stage {
-            Stage::Ir => ir_program.execute(),
-            Stage::Bf => bf_program.execute(),
+            Stage::Ir => ir_program.execute(stdin, stdout),
+            Stage::Bf => bf_program.execute(stdin, stdout),
         };
         if run_options.print_memory {
             println!("{final_state:?}");

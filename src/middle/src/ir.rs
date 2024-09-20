@@ -143,7 +143,7 @@ pub enum Instruction {
 }
 
 impl Instruction {
-    pub fn execute(&self, state: &mut MemoryState) {
+    pub fn execute(&self, state: &mut MemoryState, stdin: &mut impl Read, stdout: &mut impl Write) {
         match *self {
             Instruction::Load {
                 ref src,
@@ -181,7 +181,7 @@ impl Instruction {
             Instruction::While { ref cond, ref body } => {
                 while *cond.resolve(state) != 0 {
                     for instruction in body {
-                        instruction.execute(state);
+                        instruction.execute(state, stdin, stdout);
                     }
                 }
             }
@@ -193,10 +193,8 @@ impl Instruction {
                 .get(*cond.resolve(state))
                 .unwrap_or(default)
                 .iter()
-                .for_each(|instruction| instruction.execute(state)),
+                .for_each(|instruction| instruction.execute(state, stdin, stdout)),
             Instruction::Input { dst } => {
-                std::io::stdout().flush().unwrap();
-                let mut stdin = std::io::stdin().lock();
                 let mut buf = [0u8];
                 if let Err(e) = stdin.read_exact(&mut buf) {
                     let std::io::ErrorKind::UnexpectedEof = e.kind() else {
@@ -206,10 +204,8 @@ impl Instruction {
                 *dst.resolve(state) = usize::from(buf[0]);
             }
             Instruction::Output { src } => {
-                let mut stdout = std::io::stdout().lock();
-                stdout.flush().unwrap();
                 stdout.write_all(&[src.resolve(state) as u8]).unwrap();
-                stdout.flush().unwrap();
+                let _ = stdout.flush();
             }
         }
     }
@@ -220,8 +216,12 @@ pub struct Program {
     pub instructions: Vec<Instruction>,
 }
 
-impl Program {
-    pub fn execute(&self) -> MemoryState {
+pub trait Execute {
+    fn execute(&self, stdin: &mut impl Read, stdout: &mut impl Write) -> MemoryState;
+}
+
+impl Execute for Program {
+    fn execute(&self, stdin: &mut impl Read, stdout: &mut impl Write) -> MemoryState {
         let mut state = MemoryState {
             frame_base: 0,
             reg: 0,
@@ -229,7 +229,7 @@ impl Program {
             heap: vec![],
         };
         for instruction in &self.instructions {
-            instruction.execute(&mut state);
+            instruction.execute(&mut state, stdin, stdout);
         }
         state
     }
