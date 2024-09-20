@@ -22,54 +22,64 @@ fn mul(mut a: usize, b: usize) -> usize {
 }
 
 fn div(mut dividend: usize, divisor: usize) -> usize {
-    let mut remainder = divisor;
-    let mut quotient = 0;
-    loop {
-        match dividend {
-            0 => {
-                match remainder {
-                    0 => quotient += 1,
-                    _ => {}
-                }
-                return quotient;
-            }
-            _ => {
-                dividend -= 1;
-                match remainder {
+    match divisor {
+        0 => panic!("attempt to divide by zero"),
+        _ => {
+            let mut remainder = divisor;
+            let mut quotient = 0;
+            loop {
+                match dividend {
                     0 => {
-                        remainder = divisor;
-                        quotient += 1;
+                        match remainder {
+                            0 => quotient += 1,
+                            _ => {}
+                        }
+                        return quotient;
                     }
-                    _ => {}
+                    _ => {
+                        dividend -= 1;
+                        match remainder {
+                            0 => {
+                                remainder = divisor;
+                                quotient += 1;
+                            }
+                            _ => {}
+                        }
+                        remainder -= 1;
+                    }
                 }
-                remainder -= 1;
             }
         }
     }
 }
 
 fn rem(mut dividend: usize, divisor: usize) -> usize {
-    let mut remainder = divisor;
-    loop {
-        match dividend {
-            0 => {
-                match remainder {
-                    0 => {}
+    match divisor {
+        0 => panic!("attempt to calculate the remainder with a divisor of zero"),
+        _ => {
+            let mut remainder = divisor;
+            loop {
+                match dividend {
+                    0 => {
+                        match remainder {
+                            0 => {}
+                            _ => {
+                                let temp = remainder;
+                                remainder = divisor;
+                                remainder -= temp;
+                            }
+                        }
+                        return remainder;
+                    }
                     _ => {
-                        let temp = remainder;
-                        remainder = divisor;
-                        remainder -= temp;
+                        dividend -= 1;
+                        match remainder {
+                            0 => remainder = divisor,
+                            _ => {}
+                        }
+                        remainder -= 1;
                     }
                 }
-                return remainder;
-            }
-            _ => {
-                dividend -= 1;
-                match remainder {
-                    0 => remainder = divisor,
-                    _ => {}
-                }
-                remainder -= 1;
             }
         }
     }
