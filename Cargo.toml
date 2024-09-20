@@ -10,6 +10,10 @@ clap = { version = "4.5.17", features = ["derive"] }
 frontend = { workspace = true }
 middle = { workspace = true }
 
+[dev-dependencies]
+rstest = "0.22.0"
+rstest_reuse = "0.7.0"
+
 [workspace]
 members = [
     "src/backend",
