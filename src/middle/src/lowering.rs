@@ -294,53 +294,70 @@ fn compile_macro_call<'src>(
             let [lhs, rhs] = args else {
                 panic!("`{name}` requires exactly 2 arguments");
             };
-            let lhs = compile_expr_and_push(lhs, scope, cur_frag);
-            let rhs = compile_expr(rhs, scope, cur_frag);
-            if lhs.ty != rhs.ty {
-                panic!("cannot compare `{}` to `{}`", lhs.ty, rhs.ty);
-            }
-            let [if_same, if_diff] = match name {
-                "==" => [1, 0],
-                "!=" => [0, 1],
+            let (ret_init, ret_modify) = match name {
+                "==" => (true, ir::StoreMode::Subtract),
+                "!=" => (false, ir::StoreMode::Add),
                 _ => unreachable!("the only comparison operators are `==` and `!=`"),
             };
-            let size = scope.size_of(&lhs.ty);
-            match size {
-                0 => return Typed::new(ir::Value::Immediate(if_same), Type::Bool),
-                1 => {}
-                2.. => todo!("comparison of large types"),
-            }
-            match rhs.value {
-                ir::Value::At(src) => scope.global.frags[*cur_frag].extend([
-                    ir::Instruction::Load { src, multiplier: 1 },
-                    ir::Instruction::Store {
-                        dst: ir::Place::Direct(lhs.value),
-                        store_mode: ir::StoreMode::Subtract,
+            let ret = compile_expr_and_push(&ast::Expr::Bool(ret_init), scope, cur_frag)
+                .map(ir::Place::Direct);
+            let lhs_base = scope.frame_offset;
+            let lhs_ty = compile_expr_and_push(lhs, scope, cur_frag).ty;
+            let rhs_base = scope.frame_offset;
+            compile_expr_and_push(rhs, scope, cur_frag).expect_ty(&lhs_ty, name);
+            let mut eq_test = vec![];
+            for offset in 0..scope.size_of(&lhs_ty) {
+                let lhs = ir::Place::Direct(ir::DirectPlace::StackFrame {
+                    offset: lhs_base + offset,
+                });
+                let rhs = ir::Place::Direct(ir::DirectPlace::StackFrame {
+                    offset: rhs_base + offset,
+                });
+                eq_test = vec![
+                    ir::Instruction::While {
+                        cond: lhs,
+                        body: vec![
+                            ir::Instruction::StoreImm {
+                                dst: lhs,
+                                value: 1,
+                                store_mode: ir::StoreMode::Subtract,
+                            },
+                            ir::Instruction::Switch {
+                                cond: rhs,
+                                cases: vec![vec![
+                                    ir::Instruction::StoreImm {
+                                        dst: lhs,
+                                        value: 0,
+                                        store_mode: ir::StoreMode::Replace,
+                                    },
+                                    ir::Instruction::StoreImm {
+                                        dst: rhs,
+                                        value: 1,
+                                        store_mode: ir::StoreMode::Add,
+                                    },
+                                ]],
+                                default: vec![ir::Instruction::StoreImm {
+                                    dst: rhs,
+                                    value: 1,
+                                    store_mode: ir::StoreMode::Subtract,
+                                }],
+                            },
+                        ],
                     },
-                ]),
-                ir::Value::Immediate(value) => {
-                    scope.global.frags[*cur_frag].push(ir::Instruction::StoreImm {
-                        dst: ir::Place::Direct(lhs.value),
-                        value,
-                        store_mode: ir::StoreMode::Subtract,
-                    })
-                }
+                    ir::Instruction::Switch {
+                        cond: rhs,
+                        cases: vec![eq_test],
+                        default: vec![ir::Instruction::StoreImm {
+                            dst: ret.value,
+                            value: 1,
+                            store_mode: ret_modify,
+                        }],
+                    },
+                ];
             }
-            scope.global.frags[*cur_frag].push(ir::Instruction::Switch {
-                cond: ir::Place::Direct(lhs.value),
-                cases: vec![vec![ir::Instruction::StoreImm {
-                    dst: ir::Place::Direct(lhs.value),
-                    value: if_same,
-                    store_mode: ir::StoreMode::Replace,
-                }]],
-                default: vec![ir::Instruction::StoreImm {
-                    dst: ir::Place::Direct(lhs.value),
-                    value: if_diff,
-                    store_mode: ir::StoreMode::Replace,
-                }],
-            });
-            scope.frame_offset = orig_frame_offset + size;
-            Typed::new(stack_value_at(orig_frame_offset), Type::Bool)
+            scope.global.frags[*cur_frag].extend(eq_test);
+            scope.frame_offset = orig_frame_offset + 1;
+            ret.map(ir::Value::At)
         }
         "&&" | "||" => {
             let [lhs, rhs] = args else {
