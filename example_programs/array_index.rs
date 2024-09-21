@@ -11,9 +11,9 @@ fn main() {
         let fourth = &mut arr[3];
         *fourth = 45;
     }
-    let mut i = 0;
-    while i < 12 {
-        println!("x[%d] = %d", i, arr[ret_and_inc(&mut i)]);
+    let mut i = 1;
+    while i <= 12 {
+        println!("x[%d] = %d", i - 1, arr[ret_and_inc(&mut i) - 1]);
     }
 }
 
