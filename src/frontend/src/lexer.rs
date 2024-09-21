@@ -67,10 +67,6 @@ pub enum Token<'src> {
     SlashEq,
     #[display("%=")]
     PercentEq,
-    #[display("&&=")]
-    AndAndEq,
-    #[display("||=")]
-    OrOrEq,
     #[display("=")]
     Eq,
     // logical operators
@@ -170,8 +166,6 @@ fn operator_lexer<'src>() -> impl Parser<'src, Token<'src>> {
         just("*=").to(Token::StarEq),
         just("/=").to(Token::SlashEq),
         just("%=").to(Token::PercentEq),
-        just("&&=").to(Token::AndAndEq),
-        just("||=").to(Token::OrOrEq),
         just("=").to(Token::Eq),
         // logical operators
         just("&&").to(Token::AndAnd),

@@ -340,40 +340,6 @@ fn statement_without_block_parser<'tokens, 'src: 'tokens>(
             mode: AssignMode::Replace,
         });
 
-    #[derive(Clone)]
-    enum ShortCircuitOp {
-        And,
-        Or,
-    }
-
-    let short_circuit_assign = place_parser(expr_parser(false))
-        .then(choice([
-            just(Token::AndAndEq).to(ShortCircuitOp::And),
-            just(Token::OrOrEq).to(ShortCircuitOp::Or),
-        ]))
-        .then(expr_parser(false))
-        .map(|((place, op), value)| {
-            let [short_circuit, long_circuit] = [
-                vec![],
-                vec![Statement::Assign {
-                    place: place.clone(),
-                    value,
-                    mode: AssignMode::Replace,
-                }],
-            ];
-            let [false_branch, true_branch] = match op {
-                ShortCircuitOp::And => [short_circuit, long_circuit],
-                ShortCircuitOp::Or => [long_circuit, short_circuit],
-            };
-            Statement::If {
-                cond: Expr::Place(place),
-                true_branch,
-                false_branch,
-            }
-        });
-
-    let assign = choice((simple_assign, arithmetic_assign, short_circuit_assign));
-
     let r#return = just(Token::Return)
         .ignore_then(expr_parser(false).or_not().map(Option::unwrap_or_default))
         .map(Statement::Return);
@@ -384,7 +350,15 @@ fn statement_without_block_parser<'tokens, 'src: 'tokens>(
 
     let eval = expr_parser(false).map(Statement::Eval);
 
-    choice((r#let, assign, r#return, r#break, r#continue, eval))
+    choice((
+        r#let,
+        simple_assign,
+        arithmetic_assign,
+        r#return,
+        r#break,
+        r#continue,
+        eval,
+    ))
 }
 
 fn block_parser<'tokens, 'src: 'tokens>() -> impl Parser<'tokens, 'src, Vec<Statement<'src>>> {
