@@ -1,0 +1,19 @@
+size of usize: 1
+size of (): 0
+size of bool: 1
+size of char: 1
+size of (usize, bool, char): 3
+size of [usize; 10]: 10
+size of [(); 10]: 0
+size of [(bool, char); 6]: 12
+struct Bar {
+    a: usize,
+    b: [usize; 3],
+}
+struct Foo {
+    a: [Bar; 2],
+    b: bool,
+    c: [(); 42],
+}
+size of Foo: 9
+size of &Foo: 1

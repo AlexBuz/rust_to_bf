@@ -82,6 +82,7 @@ static MACRO_NAMES: &[&str] = &[
     "panic",
     "boxed",
     "malloc",
+    "size_of_val",
 ];
 
 fn compile_macro_call<'src>(
@@ -289,6 +290,14 @@ fn compile_macro_call<'src>(
                     ty: Box::new(ty),
                 },
             )
+        }
+        "size_of_val" => {
+            let [arg] = args else {
+                panic!("`{name}` requires exactly 1 argument");
+            };
+            let ty = compile_expr(arg, scope, cur_frag).ty;
+            scope.frame_offset = orig_frame_offset;
+            Typed::new(ir::Value::Immediate(scope.size_of(&ty)), Type::Usize)
         }
         "==" | "!=" => {
             let [lhs, rhs] = args else {
@@ -1371,10 +1380,10 @@ fn compile_block<'src>(
                 };
             }
             ast::Statement::Match {
-                scrutinee: ref cond,
+                ref scrutinee,
                 ref arms,
             } => {
-                let cond = compile_expr(cond, scope, &mut cur_frag);
+                let cond = compile_expr(scrutinee, scope, &mut cur_frag);
 
                 let mut ordered_arms = BTreeMap::new();
                 let mut default_body = None;

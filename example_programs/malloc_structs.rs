@@ -1,9 +1,8 @@
 fn main() {
     let len = 10;
-    let struct_size = 2;
-    let malloc_size = len * struct_size;
-    let evens: &mut [NumAndSquare] = malloc!(malloc_size) as &mut [NumAndSquare];
-    let odds: &mut [NumAndSquare] = malloc!(malloc_size) as &mut [NumAndSquare];
+    let struct_size = size_of_val!(NumAndSquare { num: 0, square: 0 });
+    let evens = malloc!(len * struct_size) as &mut [NumAndSquare];
+    let odds = malloc!(len * struct_size) as &mut [NumAndSquare];
     let mut i = 0;
     while i < len {
         evens[i] = num_and_square_for(i * 2);
