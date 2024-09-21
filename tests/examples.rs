@@ -41,7 +41,10 @@ impl From<PathBuf> for ExampleProgram {
         let ir_program = middle::ir::Program::from(&ast);
 
         path.set_extension("stdin");
-        let input = std::fs::read_to_string(&path).unwrap_or_default();
+        let input = std::fs::read_to_string(&path).unwrap_or_else(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => String::new(),
+            _ => panic!("failed to read input file at path {path:?}: {e}"),
+        });
 
         path.set_extension("stdout");
         let expected_output = std::fs::read_to_string(&path).unwrap_or_else(|e| {
