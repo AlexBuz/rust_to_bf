@@ -144,28 +144,28 @@ impl std::fmt::Display for Type<'_> {
             Type::Tuple(tys) => {
                 write!(f, "(")?;
                 if let Some((first, rest)) = tys.split_first() {
-                    write!(f, "{}", first)?;
+                    write!(f, "{first}")?;
                     if rest.is_empty() {
                         write!(f, ",")?;
                     } else {
                         for ty in rest {
-                            write!(f, ", {}", ty)?;
+                            write!(f, ", {ty}")?;
                         }
                     }
                 }
                 write!(f, ")")
             }
             Type::Array { ty, len } => match len {
-                Some(len) => write!(f, "[{}; {}]", ty, len),
-                None => write!(f, "[{}]", ty),
+                Some(len) => write!(f, "[{ty}; {len}]"),
+                None => write!(f, "[{ty}]"),
             },
-            Type::Named(name) => write!(f, "{}", name),
+            Type::Named(name) => write!(f, "{name}"),
             Type::Ref { mutable, ty } => {
                 write!(f, "&")?;
                 if *mutable {
                     write!(f, "mut ")?;
                 }
-                write!(f, "{}", ty)
+                write!(f, "{ty}")
             }
         }
     }
