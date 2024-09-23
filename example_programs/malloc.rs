@@ -10,7 +10,7 @@ fn main() {
     }
     i = 0;
     while i < size {
-        print!("%d %d ", arr1[i], arr2[i]);
+        print!("{} {} ", arr1[i], arr2[i]);
         i += 1;
     }
     println!();

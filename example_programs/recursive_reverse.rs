@@ -10,7 +10,7 @@ fn reverse_line() {
         '\n' => return,
         _ => {
             reverse_line();
-            print_char!(c);
+            print!("{c}");
         }
     }
 }

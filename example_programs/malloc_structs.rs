@@ -11,8 +11,8 @@ fn main() {
     }
     i = 0;
     while i < len {
-        println!("%d^2 = %d", evens[i].num, evens[i].square);
-        println!("%d^2 = %d", odds[i].num, odds[i].square);
+        println!("{}^2 = {}", evens[i].num, evens[i].square);
+        println!("{}^2 = {}", odds[i].num, odds[i].square);
         i += 1;
     }
 }

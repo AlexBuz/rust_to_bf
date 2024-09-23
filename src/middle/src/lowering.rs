@@ -323,22 +323,31 @@ impl<'src> GlobalContext<'src> {
     }
 }
 
+fn unescape_char(chars: &mut impl Iterator<Item = char>) -> char {
+    match chars.next().expect("unterminated character escape") {
+        '"' => '"',
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        '\\' => '\\',
+        '\'' => '\'',
+        '0' => '\0',
+        c => panic!("unknown character escape: `{c}`"),
+    }
+}
+
 fn unescape_str(s: &str) -> impl Iterator<Item = u8> + '_ {
-    let mut bytes = s.bytes();
+    let mut chars = s.chars();
     std::iter::from_fn(move || {
-        let byte = bytes.next()?;
-        match byte {
-            b'\\' => match bytes.next().expect("unterminated character escape") {
-                b'n' => Some(b'\n'),
-                b'r' => Some(b'\r'),
-                b't' => Some(b'\t'),
-                b'\\' => Some(b'\\'),
-                b'"' => Some(b'"'),
-                b'\'' => Some(b'\''),
-                _ => panic!("unknown character escape"),
-            },
-            _ => Some(byte),
-        }
+        Some(match chars.next()? {
+            '\\' => unescape_char(&mut chars),
+            c => c,
+        })
+    })
+    .flat_map(|c| {
+        let mut buf = [0; 4];
+        c.encode_utf8(&mut buf);
+        buf.into_iter().take_while(|&b| b != 0)
     })
 }
 
@@ -557,44 +566,91 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                 Typed::new(stack_value_at(orig_frame_offset), Type::unit())
             }
             "print" => {
-                let Some((first_arg, mut args)) = args.split_first() else {
+                let mut args = args.iter();
+                let Some(first_arg) = args.next() else {
                     panic!("`{name}` requires at least 1 argument");
                 };
                 let format_str = match first_arg {
                     ast::Expr::Str(s) => s,
                     _ => panic!("first argument to `{name}` must be a string literal"),
                 };
-                let mut format_bytes = unescape_str(format_str);
-                while let Some(byte) = format_bytes.next() {
-                    if byte == b'%' {
-                        let Some(format_specifier) = format_bytes.next() else {
-                            panic!("unterminated format specifier");
-                        };
-                        if format_specifier == b'%' {
-                            self.push_cur_frag(ir::Instruction::Output {
-                                src: ir::Value::Immediate(b'%' as usize),
-                            });
-                            continue;
-                        }
-                        let Some((arg, rest)) = args.split_at_checked(1) else {
-                            panic!("not enough arguments for format string `{format_str}`")
-                        };
-                        args = rest;
-                        match format_specifier {
-                            b'i' | b'd' => self.compile_func_call("print_int", arg),
-                            b'c' => self.compile_macro_call("print_char", arg),
-                            b's' => self.compile_macro_call("print_str", arg),
-                            _ => panic!("invalid format specifier"),
-                        }
-                        .expect_ty(&Type::unit(), name);
-                    } else {
+                let mut chars = format_str.chars();
+                while let Some(c) = chars.next() {
+                    let c = match c {
+                        '\\' => unescape_char(&mut chars),
+                        '{' => match chars.clone().next() {
+                            Some('{') => {
+                                chars.next();
+                                '{'
+                            }
+                            Some(_) => {
+                                let Some((name, rest)) = chars.as_str().split_once('}') else {
+                                    panic!("unterminated `{{` in format string");
+                                };
+                                chars = rest.chars();
+                                if name.is_empty() {
+                                    let Some(arg) = args.next() else {
+                                        panic!(
+                                            "not enough arguments for format string `{format_str}`"
+                                        );
+                                    };
+                                    let var = Var {
+                                        frame_offset: self.frame_offset,
+                                        mutable: false,
+                                        name,
+                                        ty: self.compile_expr_and_push(arg).ty,
+                                    };
+                                    self.vars.push(var);
+                                }
+                                if name.starts_with(|c: char| !c.is_ascii_alphabetic() && c != '_')
+                                    || name.chars().any(|c| !c.is_ascii_alphanumeric() && c != '_')
+                                {
+                                    panic!("invalid variable name `{name}`");
+                                }
+                                let outer_ty = self.compile_var_access(name).ty;
+                                let mut ty = &outer_ty;
+                                let mut arg = ast::Expr::Place(ast::Place::Var(name));
+                                loop {
+                                    match ty {
+                                        Type::Usize => {
+                                            break self.compile_func_call("print_int", &[arg]);
+                                        }
+                                        Type::Char => {
+                                            break self.compile_macro_call("print_char", &[arg]);
+                                        }
+                                        Type::Ref { ty: inner_ty, .. } => match **inner_ty {
+                                            Type::Str => {
+                                                break self.compile_macro_call("print_str", &[arg]);
+                                            }
+                                            _ => {
+                                                ty = inner_ty;
+                                                arg = ast::Expr::Place(ast::Place::Deref(
+                                                    Box::new(arg),
+                                                ));
+                                            }
+                                        },
+                                        _ => panic!("cannot print variable of type `{outer_ty}`"),
+                                    }
+                                }
+                                .expect_ty(&Type::unit(), name);
+                                self.shrink_frame(orig_frame_offset);
+                                continue;
+                            }
+                            None => panic!("unterminated `{{` in format string"),
+                        },
+                        '}' => match chars.next() {
+                            Some('}') => '}',
+                            _ => panic!("unescaped `}}` in format string"),
+                        },
+                        _ => c,
+                    };
+                    for byte in c.encode_utf8(&mut [0; 4]).bytes() {
                         self.push_cur_frag(ir::Instruction::Output {
                             src: ir::Value::Immediate(byte as usize),
                         });
                     }
                 }
-                self.frame_offset = orig_frame_offset;
-                if !args.is_empty() {
+                if args.next().is_some() {
                     panic!("too many arguments for format string `{format_str}`");
                 }
                 Typed::new(stack_value_at(orig_frame_offset), Type::unit())

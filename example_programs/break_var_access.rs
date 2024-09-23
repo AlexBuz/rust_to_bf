@@ -2,20 +2,20 @@ fn main() {
     loop {
         let a = 'F';
         if a != 'F' {
-            print_char!(a);
+            print!("{a}");
         } else {
             break;
         }
-        print_char!(a);
+        print!("{a}");
     }
     loop {
         let b = 'F';
         if b != '\0' {
             break;
         } else {
-            print_char!(b);
+            print!("{b}");
         }
-        print_char!(b);
+        print!("{b}");
     }
     loop {
         let a = 0;
@@ -35,7 +35,7 @@ fn main() {
                 let x = c;
             }
             _ => {
-                print_char!(c);
+                print!("{c}");
             }
         }
         break;

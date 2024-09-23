@@ -26,7 +26,7 @@ fn main() {
     // name_mut_ref.name = &mut p.name;
 
     println!(
-        "%s %s is %d years old.",
+        "{} {} is {} years old.",
         name_mut_ref.name.first, p.name.last, p.age
     );
 }

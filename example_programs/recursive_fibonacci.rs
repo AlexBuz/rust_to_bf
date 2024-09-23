@@ -1,6 +1,6 @@
 fn main() {
     print!("Enter a number to calculate the corresponding Fibonacci number: ");
-    println!("Result: %d", fib(read_int()));
+    println!("Result: {}", fib(read_int()));
 }
 
 fn fib(mut n: usize) -> usize {

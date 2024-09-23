@@ -4,6 +4,6 @@ fn main() {
     let foo = (3, (4, 5), 6);
     let foo = &foo;
 
-    println!("life = %d", arr[foo.1 .1]);
+    println!("life = {}", arr[foo.1 .1]);
     return;
 }

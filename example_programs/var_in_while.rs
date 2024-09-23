@@ -7,6 +7,6 @@ fn main() {
         x -= 1;
     }
     let z = total + 5;
-    println!("3 * 12 + 5 = %d", z);
+    println!("3 * 12 + 5 = {z}");
     return;
 }

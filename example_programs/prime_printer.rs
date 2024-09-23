@@ -4,7 +4,7 @@ fn main() {
     let mut candidate = 2;
     while count != 0 {
         if is_prime(candidate) {
-            print!("%d, ", candidate);
+            print!("{candidate}, ");
             count -= 1;
         }
         candidate += 1;

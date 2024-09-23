@@ -26,7 +26,7 @@ fn print_triple_triple(
 
 fn print_triple(triple: (usize, usize, usize)) {
     println!(
-        "First: %d, Second: %d, Third: %d",
+        "First: {}, Second: {}, Third: {}",
         triple.0, triple.1, triple.2
     );
 }

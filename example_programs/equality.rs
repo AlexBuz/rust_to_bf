@@ -28,16 +28,16 @@ fn main() {
 
 fn test_tup_eq(a: (usize, usize), b: (usize, usize)) {
     if a == b {
-        println!("(%d, %d) == (%d, %d)", a.0, a.1, b.0, b.1);
+        println!("({}, {}) == ({}, {})", a.0, a.1, b.0, b.1);
     } else {
-        println!("(%d, %d) != (%d, %d)", a.0, a.1, b.0, b.1);
+        println!("({}, {}) != ({}, {})", a.0, a.1, b.0, b.1);
     }
 }
 
 fn test_tup_ne(a: (usize, usize), b: (usize, usize)) {
     if a != b {
-        println!("(%d, %d) != (%d, %d)", a.0, a.1, b.0, b.1);
+        println!("({}, {}) != ({}, {})", a.0, a.1, b.0, b.1);
     } else {
-        println!("(%d, %d) == (%d, %d)", a.0, a.1, b.0, b.1);
+        println!("({}, {}) == ({}, {})", a.0, a.1, b.0, b.1);
     }
 }

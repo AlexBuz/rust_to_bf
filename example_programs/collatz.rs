@@ -9,8 +9,7 @@ fn main() {
 
 fn print_sequence(mut num: usize) {
     while num != 1 {
-        print_int(num);
-        print!(", ");
+        print!("{num}, ");
         match num % 2 {
             0 => num /= 2,
             _ => {
@@ -19,8 +18,7 @@ fn print_sequence(mut num: usize) {
             }
         }
     }
-    print_int(num);
-    println!();
+    println!("{num}");
 }
 
 fn print_max_sequence() {
@@ -29,15 +27,11 @@ fn print_max_sequence() {
     loop {
         if sequence_length(num) > max_length {
             max_length = sequence_length(num);
-            print_int(num);
-            print!(": length ");
-            print_int(max_length);
-            println!();
+            println!("{num}: length {max_length}");
         }
         num += 1;
     }
-    print_int(num);
-    println!();
+    println!("{num}");
 }
 
 fn sequence_length(mut num: usize) -> usize {

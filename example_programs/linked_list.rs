@@ -144,10 +144,10 @@ fn print_list(list: &LinkedList) {
     let mut item: usize;
     print!("[");
     if next(&mut iter, &mut item) {
-        print!("%d", item);
+        print!("{item}");
     }
     while next(&mut iter, &mut item) {
-        print!(", %d", item);
+        print!(", {item}");
     }
     println!("]");
 }

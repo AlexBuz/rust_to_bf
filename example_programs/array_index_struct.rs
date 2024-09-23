@@ -50,7 +50,7 @@ fn main() {
     let mut i = 0;
     while i < len {
         println!(
-            "%d. %s is %d years old.",
+            "{}. {} is {} years old.",
             i + 1,
             people[i].name,
             people[i].age
@@ -59,7 +59,7 @@ fn main() {
         i += 1;
     }
     let avg = sum / len;
-    println!("The average age is %d.", avg);
+    println!("The average age is {avg}.");
 }
 
 struct Person {

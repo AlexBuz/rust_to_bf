@@ -30,7 +30,7 @@ fn main() {
     ***id(id(*&mut ppp)) = 1;
 
     println!(
-        "1/7 ≈ 0.%d%d%d%d%d%d",
+        "1/7 ≈ 0.{}{}{}{}{}{}",
         nums0.0 .0, nums0.0 .1, nums0.1, nums1.0 .0, nums1.0 .1, nums1.1
     );
 }

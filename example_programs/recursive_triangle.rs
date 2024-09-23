@@ -2,10 +2,7 @@ fn main() {
     print!("Enter a number to calculate the corresponding triangular number: ");
     let n = read_int();
     let result = triangle(n);
-    println!(
-        "The sum of the first %d positive integers is %d.",
-        n, result
-    );
+    println!("The sum of the first {n} positive integers is {result}.");
 }
 
 fn triangle(mut n: usize) -> usize {

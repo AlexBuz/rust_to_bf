@@ -1,7 +1,7 @@
 fn main() {
     let date = read_date();
     println!(
-        "%s %d, %d is a %s.",
+        "{} {}, {} is a {}.",
         get_month_str(date.month),
         date.day,
         100 * date.century + date.year,
@@ -40,7 +40,7 @@ fn read_date() -> Date {
     day += read_digit();
 
     if day < 1 || day > 31 {
-        println!("Invalid day: %d", day);
+        println!("Invalid day: {day}");
         exit!();
     }
 
@@ -67,7 +67,7 @@ fn get_month_str(month: usize) -> &str {
         11 => return "November",
         12 => return "December",
         _ => {
-            println!("Invalid month: %d", month);
+            println!("Invalid month: {month}");
             exit!();
         }
     }
@@ -106,7 +106,7 @@ fn get_month_offset(century: usize, year: usize, month: usize) -> usize {
         11 => return 2,
         12 => return 4,
         _ => {
-            println!("Invalid month: %d", month);
+            println!("Invalid month: {month}");
             exit!();
         }
     }
@@ -132,7 +132,7 @@ fn get_day_of_week(date: Date) -> &str {
 fn read_digit() -> usize {
     let c = read_char!() as usize;
     if c < 48 || c > 57 {
-        println!("Invalid input: expected a digit, but got '%c'", c as char);
+        println!("Invalid input: expected a digit, but got '{}'", c as char);
         exit!();
     }
     return c - 48;
@@ -141,7 +141,7 @@ fn read_digit() -> usize {
 fn expect_hyphen() {
     let c = read_char!();
     if c != '-' {
-        println!("Invalid input: expected a hyphen, but got '%c'", c);
+        println!("Invalid input: expected a hyphen, but got '{c}'");
         exit!();
     }
 }

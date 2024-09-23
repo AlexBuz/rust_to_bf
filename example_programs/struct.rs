@@ -23,7 +23,7 @@ fn main() {
 
 fn print_person(person: Person) {
     println!(
-        "%s %s is %d years old and lives at %d.",
+        "{} {} is {} years old and lives at {}.",
         person.name.first, person.name.last, person.age, person.address
     );
 }

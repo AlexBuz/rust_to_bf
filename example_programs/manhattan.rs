@@ -2,13 +2,13 @@ fn main() {
     let mut point = Point { x: 3, y: 4 };
     let mut origin = Point { x: 0, y: 0 };
     let mut distance = manhattan_distance((point, origin));
-    println!("Manhattan distance: %d", distance);
+    println!("Manhattan distance: {distance}");
     origin.x = 1;
     distance = manhattan_distance((point, origin));
-    println!("Manhattan distance: %d", distance);
+    println!("Manhattan distance: {distance}");
     origin.y = 2;
     distance = manhattan_distance((point, origin));
-    println!("Manhattan distance: %d", distance);
+    println!("Manhattan distance: {distance}");
 }
 
 struct Point {

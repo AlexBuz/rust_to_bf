@@ -1,16 +1,16 @@
 fn main() {
     loop {
         if not_true() {
-            print_char!('F');
+            print!("F");
         } else {
-            print_char!('B');
+            print!("B");
             break;
         }
     }
-    print_char!('C', '\n');
+    println!("C");
 }
 
 fn not_true() -> bool {
-    print_char!('A');
+    print!("A");
     return false;
 }

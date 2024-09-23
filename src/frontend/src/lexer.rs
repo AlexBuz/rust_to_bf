@@ -184,11 +184,11 @@ fn operator_lexer<'src>() -> impl Parser<'src, Token<'src>> {
 
 fn char_escape_lexer<'src>() -> impl Parser<'src, char> {
     just('\\').ignore_then(choice([
+        just('"').to('"'),
         just('n').to('\n'),
         just('r').to('\r'),
         just('t').to('\t'),
         just('\\').to('\\'),
-        just('"').to('"'),
         just('\'').to('\''),
         just('0').to('\0'),
     ]))

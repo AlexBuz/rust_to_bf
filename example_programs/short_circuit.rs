@@ -10,7 +10,7 @@ fn main() {
 }
 
 fn should_run(num: usize) -> bool {
-    println!("%d. This should run. All good.", num);
+    println!("{num}. This should run. All good.");
     return true;
 }
 

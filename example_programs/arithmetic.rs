@@ -9,7 +9,7 @@ fn main() {
     while a <= max {
         b = 1;
         while b <= max {
-            println!("%d + %d = %d", a, b, a + b);
+            println!("{a} + {b} = {}", a + b);
             b += 1;
         }
         a += 1;
@@ -20,7 +20,7 @@ fn main() {
     while a <= max {
         b = 0;
         while b <= a {
-            println!("%d - %d = %d", a, b, a - b);
+            println!("{a} - {b} = {}", a - b);
             b += 1;
         }
         a += 1;
@@ -31,7 +31,7 @@ fn main() {
     while a <= max {
         b = 1;
         while b <= max {
-            println!("%d * %d = %d", a, b, a * b);
+            println!("{a} * {b} = {}", a * b);
             b += 1;
         }
         a += 1;
@@ -42,7 +42,7 @@ fn main() {
     while a <= max {
         b = 1;
         while b <= max {
-            println!("%d / %d = %d", a, b, a / b);
+            println!("{a} / {b} = {}", a / b);
             b += 1;
         }
         a += 1;
@@ -53,7 +53,7 @@ fn main() {
     while a <= max {
         b = 1;
         while b <= max {
-            println!("%d %% %d = %d", a, b, a % b);
+            println!("{a} % {b} = {}", a % b);
             b += 1;
         }
         a += 1;
@@ -62,9 +62,9 @@ fn main() {
     println!("\nTesting division by zero...");
     b = 0;
     // should panic
-    println!("%d / %d = %d", a, b, a / b);
+    println!("{a} / {b} = {}", a / b);
 
     // unreachable
     println!("\nTesting modulus by zero...");
-    println!("%d %% %d = %d", a, b, a % b);
+    println!("{a} % {b} = {}", a % b);
 }
