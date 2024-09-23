@@ -7,6 +7,7 @@ pub(super) trait Parser<'src, Output>:
     ChumskyParser<'src, &'src str, Output, extra::Err<Rich<'src, char>>> + Clone
 {
 }
+
 impl<
         'src,
         Output,
@@ -247,14 +248,27 @@ fn token_lexer<'src>() -> impl Parser<'src, Token<'src>> {
     ))
 }
 
-fn comment_lexer<'src>() -> impl Parser<'src, ()> {
-    just("//").then(none_of('\n').repeated()).padded().ignored()
+fn ignore_comments<'src>() -> impl Parser<'src, ()> {
+    choice((
+        just("//").then(none_of('\n').repeated()).ignored(),
+        recursive(|block_comment| {
+            choice((
+                block_comment,
+                none_of('*').ignored(),
+                just('*').then(none_of('/')).ignored(),
+            ))
+            .repeated()
+            .delimited_by(just("/*"), just("*/"))
+        }),
+    ))
+    .padded()
+    .repeated()
 }
 
 pub(super) fn lexer<'src>() -> impl Parser<'src, Vec<Token<'src>>> {
     token_lexer()
-        .padded_by(comment_lexer().repeated())
         .padded()
+        .padded_by(ignore_comments())
         .repeated()
         .collect()
         .then_ignore(end())

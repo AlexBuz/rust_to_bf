@@ -9,6 +9,7 @@ pub(super) trait Parser<'tokens, 'src: 'tokens, Output>:
     + 'tokens
 {
 }
+
 impl<
         'tokens,
         'src: 'tokens,
