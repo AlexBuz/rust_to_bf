@@ -173,7 +173,7 @@ fn print_int(mut num: usize) {
                     _ => print_int(quotient),
                 }
                 remainder += '0' as usize;
-                print_char!(remainder as char);
+                print!("{}", remainder as char);
                 return;
             }
             _ => {

@@ -219,8 +219,6 @@ struct PlaceMut {
 
 static MACRO_NAMES: &[&str] = &[
     "read_char",
-    "print_char",
-    "print_str",
     "print",
     "println",
     "exit",
@@ -348,6 +346,12 @@ fn unescape_str(s: &str) -> impl Iterator<Item = u8> + '_ {
         let mut buf = [0; 4];
         c.encode_utf8(&mut buf);
         buf.into_iter().take_while(|&b| b != 0)
+    })
+}
+
+fn compile_print_str_literal(s: &str) -> impl Iterator<Item = ir::Instruction> + '_ {
+    unescape_str(s).map(|byte| ir::Instruction::Output {
+        src: ir::Value::Immediate(byte as usize),
     })
 }
 
@@ -500,6 +504,48 @@ impl<'a, 'src> FuncContext<'a, 'src> {
         });
     }
 
+    fn compile_print_char(&mut self, arg: &ast::Expr<'src>) {
+        let src = self.compile_expr(arg).expect_ty(&Type::Char, "print_char");
+        self.push_cur_frag(ir::Instruction::Output { src });
+    }
+
+    fn compile_print_bool(&mut self, arg: &ast::Expr<'src>) {
+        match self.compile_expr(arg).expect_ty(&Type::Bool, "print_bool") {
+            ir::Value::Immediate(b) => self.extend_cur_frag(compile_print_str_literal(if b != 0 {
+                "true"
+            } else {
+                "false"
+            })),
+            ir::Value::At(place) => self.push_cur_frag(ir::Instruction::Switch {
+                cond: place,
+                cases: vec![compile_print_str_literal("false").collect()],
+                default: compile_print_str_literal("true").collect(),
+            }),
+        }
+    }
+
+    fn compile_print_str(&mut self, arg: &ast::Expr<'src>) {
+        if let ast::Expr::Str(s) = arg {
+            self.extend_cur_frag(compile_print_str_literal(s))
+        } else {
+            let return_frag = self.global.add_frag(vec![ir::Instruction::RestoreFrame {
+                size: self.frame_offset,
+            }]);
+
+            self.set_imm(self.frame_offset, return_frag);
+            self.frame_offset += 1;
+
+            self.compile_expr_and_push(arg)
+                .expect_ref(&Type::Str, "print_str");
+
+            self.push_cur_frag(ir::Instruction::SaveFrame {
+                size: self.frame_offset - 1,
+            });
+
+            self.cur_frag = return_frag;
+        }
+    }
+
     fn compile_macro_call(
         &mut self,
         name: &str,
@@ -518,52 +564,6 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                 });
                 self.frame_offset += 1;
                 Typed::new(stack_value_at(orig_frame_offset), Type::Char)
-            }
-            "print_char" => {
-                if args.is_empty() {
-                    panic!("`{name}` requires at least 1 argument");
-                }
-                for arg in args {
-                    let src = self.compile_expr(arg).expect_ty(&Type::Char, name);
-                    self.push_cur_frag(ir::Instruction::Output { src });
-                    self.frame_offset = orig_frame_offset;
-                }
-                Typed::new(stack_value_at(orig_frame_offset), Type::unit())
-            }
-            "print_str" => {
-                if args.is_empty() {
-                    panic!("`{name}` requires at least 1 argument");
-                }
-                for arg in args {
-                    match arg {
-                        ast::Expr::Str(s) => {
-                            self.extend_cur_frag(unescape_str(s).map(|byte| {
-                                ir::Instruction::Output {
-                                    src: ir::Value::Immediate(byte as usize),
-                                }
-                            }));
-                        }
-                        _ => {
-                            let return_frag =
-                                self.global.add_frag(vec![ir::Instruction::RestoreFrame {
-                                    size: self.frame_offset,
-                                }]);
-
-                            self.set_imm(self.frame_offset, return_frag);
-                            self.frame_offset += 1;
-
-                            self.compile_expr_and_push(arg).expect_ref(&Type::Str, name);
-
-                            self.push_cur_frag(ir::Instruction::SaveFrame {
-                                size: self.frame_offset - 1,
-                            });
-                            self.frame_offset = orig_frame_offset;
-
-                            self.cur_frag = return_frag;
-                        }
-                    }
-                }
-                Typed::new(stack_value_at(orig_frame_offset), Type::unit())
             }
             "print" => {
                 let mut args = args.iter();
@@ -613,15 +613,14 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                                 loop {
                                     match ty {
                                         Type::Usize => {
-                                            break self.compile_func_call("print_int", &[arg]);
+                                            self.compile_func_call("print_int", &[arg])
+                                                .expect_ty(&Type::unit(), name);
+                                            break;
                                         }
-                                        Type::Char => {
-                                            break self.compile_macro_call("print_char", &[arg]);
-                                        }
+                                        Type::Char => break self.compile_print_char(&arg),
+                                        Type::Bool => break self.compile_print_bool(&arg),
                                         Type::Ref { ty: inner_ty, .. } => match **inner_ty {
-                                            Type::Str => {
-                                                break self.compile_macro_call("print_str", &[arg]);
-                                            }
+                                            Type::Str => break self.compile_print_str(&arg),
                                             _ => {
                                                 ty = inner_ty;
                                                 arg = ast::Expr::Place(ast::Place::Deref(
@@ -632,7 +631,6 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                                         _ => panic!("cannot print variable of type `{outer_ty}`"),
                                     }
                                 }
-                                .expect_ty(&Type::unit(), name);
                                 self.shrink_frame(orig_frame_offset);
                                 continue;
                             }
@@ -674,13 +672,9 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                 Typed::new(stack_value_at(orig_frame_offset), Type::unit())
             }
             "panic" => {
-                self.extend_cur_frag(b"panicked: ".map(|byte| ir::Instruction::Output {
-                    src: ir::Value::Immediate(byte as usize),
-                }));
+                self.extend_cur_frag(compile_print_str_literal("panicked: "));
                 if args.is_empty() {
-                    self.extend_cur_frag(b"explicit panic\n".map(|byte| ir::Instruction::Output {
-                        src: ir::Value::Immediate(byte as usize),
-                    }));
+                    self.extend_cur_frag(compile_print_str_literal("explicit panic\n"));
                 } else {
                     self.compile_macro_call("println", args)
                         .expect_ty(&Type::unit(), name);
@@ -1312,9 +1306,7 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                 self.global.frags.push(
                     [ir::Instruction::RestoreFrame { size: 1 }]
                         .into_iter()
-                        .chain(unescape_str(s).map(|byte| ir::Instruction::Output {
-                            src: ir::Value::Immediate(byte as usize),
-                        }))
+                        .chain(compile_print_str_literal(s))
                         .collect(),
                 );
                 self.global.frags.len() - 1
