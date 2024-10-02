@@ -6,12 +6,12 @@ edition.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 backend = { workspace = true }
-clap = { version = "4.5.17", features = ["derive"] }
+clap = { version = "4.5.19", features = ["derive"] }
 frontend = { workspace = true }
 middle = { workspace = true }
 
 [dev-dependencies]
-rstest = "0.22.0"
+rstest = "0.23.0"
 rstest_reuse = "0.7.0"
 
 [workspace]
