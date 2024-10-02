@@ -7,15 +7,15 @@
 The target language of this compiler, BF, is an esoteric programming language known for its extreme minimalism and difficulty to write serious programs in. A program in BF consists of a sequence of single-character instructions that control the actions and movements of a data pointer along a one-dimensional array of zero-initialized integer cells:
 
 | Instruction | Action                                                                         |
-| ----------- | ------------------------------------------------------------------------------ |
-| `>`         | Move the data pointer right by 1 cell.                                         |
-| `<`         | Move the data pointer left by 1 cell.                                          |
-| `+`         | Increment the value of the pointed-to cell by 1.                               |
-| `-`         | Decrement the value of the pointed-to cell by 1.                               |
-| `.`         | Output the value of the pointed-to cell.                                       |
-| `,`         | Replace the value of the pointed-to cell with the next byte of input.          |
-| `[`         | If the value of the pointed-to cell is zero, jump forward to the matching `]`. |
-| `]`         | If the value of the pointed-to cell is nonzero, jump back to the matching `[`. |
+| :---------: | ------------------------------------------------------------------------------ |
+|     `>`     | Move the data pointer right by 1 cell.                                         |
+|     `<`     | Move the data pointer left by 1 cell.                                          |
+|     `+`     | Increment the value of the pointed-to cell by 1.                               |
+|     `-`     | Decrement the value of the pointed-to cell by 1.                               |
+|     `.`     | Output the value of the pointed-to cell.                                       |
+|     `,`     | Replace the value of the pointed-to cell with the next byte of input.          |
+|     `[`     | If the value of the pointed-to cell is zero, jump forward to the matching `]`. |
+|     `]`     | If the value of the pointed-to cell is nonzero, jump back to the matching `[`. |
 
 Despite their simplicity, these eight instructions are sufficient to render the BF language [Turing-complete](https://en.wikipedia.org/wiki/Turing_completeness), meaning that it is capable of computing any computable function and thus is theoretically just as capable as any other programming language.
 
