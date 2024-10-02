@@ -1,0 +1,52 @@
+Welcome to Tic Tac Toe!
+Player X will go first.
+Enter the letter of the computer player (X or O, or press enter if there are two human players): 
+   |   |   
+---+---+---
+   |   |   
+---+---+---
+   |   |   
+
+Enter the cell where player X would like to make their move (1-9): 
+ X |   |   
+---+---+---
+   |   |   
+---+---+---
+   |   |   
+
+Enter the cell where player O would like to make their move (1-9): 
+ X |   |   
+---+---+---
+   | O |   
+---+---+---
+   |   |   
+
+Enter the cell where player X would like to make their move (1-9): 
+ X |   |   
+---+---+---
+   | O |   
+---+---+---
+   |   | X 
+
+Enter the cell where player O would like to make their move (1-9): 
+ X | O |   
+---+---+---
+   | O |   
+---+---+---
+   |   | X 
+
+Enter the cell where player X would like to make their move (1-9): 
+ X | O |   
+---+---+---
+   | O | X 
+---+---+---
+   |   | X 
+
+Enter the cell where player O would like to make their move (1-9): 
+ X | O |   
+---+---+---
+   | O | X 
+---+---+---
+   | O | X 
+
+Player O wins!
