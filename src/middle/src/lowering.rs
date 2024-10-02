@@ -231,7 +231,7 @@ static MACRO_NAMES: &[&str] = &[
 struct GlobalContext<'src> {
     func_defs: &'src BTreeMap<&'src str, FuncDef<'src>>,
     struct_defs: &'src BTreeMap<&'src str, StructDef<'src>>,
-    frags: Vec<Vec<ir::Instruction>>,
+    frags: Vec<Vec<ir::Statement>>,
     func_ids: BTreeMap<&'src str, FragId>,
     str_ids: BTreeMap<&'src str, FragId>,
 }
@@ -250,9 +250,9 @@ impl<'src> GlobalContext<'src> {
         }
     }
 
-    fn add_frag(&mut self, instructions: Vec<ir::Instruction>) -> FragId {
+    fn add_frag(&mut self, statements: Vec<ir::Statement>) -> FragId {
         let frag_id = self.frags.len();
-        self.frags.push(instructions);
+        self.frags.push(statements);
         frag_id
     }
 
@@ -349,18 +349,18 @@ fn unescape_str(s: &str) -> impl Iterator<Item = u8> + '_ {
     })
 }
 
-fn compile_print_str_literal(s: &str) -> impl Iterator<Item = ir::Instruction> + '_ {
-    unescape_str(s).map(|byte| ir::Instruction::Output {
+fn compile_print_str_literal(s: &str) -> impl Iterator<Item = ir::Statement> + '_ {
+    unescape_str(s).map(|byte| ir::Statement::Output {
         src: ir::Value::Immediate(byte as usize),
     })
 }
 
-fn goto(frag_id: FragId, frame_base_offset: usize) -> [ir::Instruction; 2] {
+fn jump(frag_id: FragId, frame_base_offset: usize) -> [ir::Statement; 2] {
     [
-        ir::Instruction::SaveFrame {
+        ir::Statement::SaveFrame {
             size: frame_base_offset,
         },
-        ir::Instruction::StoreImm {
+        ir::Statement::StoreImm {
             dst: ir::Place::Direct(ir::DirectPlace::StackFrame { offset: 0 }),
             value: frag_id,
             store_mode: ir::StoreMode::Replace,
@@ -401,7 +401,7 @@ impl<'a, 'src> FuncContext<'a, 'src> {
             vars,
             frame_offset,
             frame_call_offset,
-            cur_frag: global.add_frag(vec![ir::Instruction::RestoreFrame {
+            cur_frag: global.add_frag(vec![ir::Statement::RestoreFrame {
                 size: frame_call_offset,
             }]),
             loop_stack: vec![],
@@ -430,14 +430,14 @@ impl<'a, 'src> FuncContext<'a, 'src> {
     fn emit_return(&mut self) {
         self.push_frag(
             self.cur_frag,
-            ir::Instruction::SaveFrame {
+            ir::Statement::SaveFrame {
                 size: self.frame_call_offset - 1,
             },
         );
     }
 
     fn new_frag(&mut self) -> FragId {
-        self.global.add_frag(vec![ir::Instruction::RestoreFrame {
+        self.global.add_frag(vec![ir::Statement::RestoreFrame {
             size: self.frame_call_offset,
         }])
     }
@@ -453,21 +453,21 @@ impl<'a, 'src> FuncContext<'a, 'src> {
     fn extend_frag(
         &mut self,
         frag_id: FragId,
-        instructions: impl IntoIterator<Item = ir::Instruction>,
+        statements: impl IntoIterator<Item = ir::Statement>,
     ) {
-        self.global.frags[frag_id].extend(instructions);
+        self.global.frags[frag_id].extend(statements);
     }
 
-    fn push_frag(&mut self, frag_id: FragId, instruction: ir::Instruction) {
-        self.global.frags[frag_id].push(instruction)
+    fn push_frag(&mut self, frag_id: FragId, statement: ir::Statement) {
+        self.global.frags[frag_id].push(statement)
     }
 
-    fn extend_cur_frag(&mut self, instructions: impl IntoIterator<Item = ir::Instruction>) {
-        self.extend_frag(self.cur_frag, instructions)
+    fn extend_cur_frag(&mut self, statements: impl IntoIterator<Item = ir::Statement>) {
+        self.extend_frag(self.cur_frag, statements)
     }
 
-    fn push_cur_frag(&mut self, instruction: ir::Instruction) {
-        self.push_frag(self.cur_frag, instruction)
+    fn push_cur_frag(&mut self, statement: ir::Statement) {
+        self.push_frag(self.cur_frag, statement)
     }
 
     fn compile_single_move(
@@ -479,7 +479,7 @@ impl<'a, 'src> FuncContext<'a, 'src> {
     ) {
         match src {
             ir::Value::Immediate(value) => {
-                self.push_cur_frag(ir::Instruction::StoreImm {
+                self.push_cur_frag(ir::Statement::StoreImm {
                     dst,
                     value: value * multiplier,
                     store_mode,
@@ -487,15 +487,15 @@ impl<'a, 'src> FuncContext<'a, 'src> {
             }
             ir::Value::At(src) => {
                 self.extend_cur_frag([
-                    ir::Instruction::Load { src, multiplier },
-                    ir::Instruction::Store { dst, store_mode },
+                    ir::Statement::Load { src, multiplier },
+                    ir::Statement::Store { dst, store_mode },
                 ]);
             }
         }
     }
 
     fn set_imm(&mut self, frame_offset: usize, value: usize) {
-        self.push_cur_frag(ir::Instruction::StoreImm {
+        self.push_cur_frag(ir::Statement::StoreImm {
             dst: ir::Place::Direct(ir::DirectPlace::StackFrame {
                 offset: frame_offset,
             }),
@@ -506,7 +506,7 @@ impl<'a, 'src> FuncContext<'a, 'src> {
 
     fn compile_print_char(&mut self, arg: &ast::Expr<'src>) {
         let src = self.compile_expr(arg).expect_ty(&Type::Char, "print_char");
-        self.push_cur_frag(ir::Instruction::Output { src });
+        self.push_cur_frag(ir::Statement::Output { src });
     }
 
     fn compile_print_bool(&mut self, arg: &ast::Expr<'src>) {
@@ -516,7 +516,7 @@ impl<'a, 'src> FuncContext<'a, 'src> {
             } else {
                 "false"
             })),
-            ir::Value::At(place) => self.push_cur_frag(ir::Instruction::Switch {
+            ir::Value::At(place) => self.push_cur_frag(ir::Statement::Switch {
                 cond: place,
                 cases: vec![compile_print_str_literal("false").collect()],
                 default: compile_print_str_literal("true").collect(),
@@ -528,7 +528,7 @@ impl<'a, 'src> FuncContext<'a, 'src> {
         if let ast::Expr::Str(s) = arg {
             self.extend_cur_frag(compile_print_str_literal(s))
         } else {
-            let return_frag = self.global.add_frag(vec![ir::Instruction::RestoreFrame {
+            let return_frag = self.global.add_frag(vec![ir::Statement::RestoreFrame {
                 size: self.frame_offset,
             }]);
 
@@ -538,7 +538,7 @@ impl<'a, 'src> FuncContext<'a, 'src> {
             self.compile_expr_and_push(arg)
                 .expect_ref(&Type::Str, "print_str");
 
-            self.push_cur_frag(ir::Instruction::SaveFrame {
+            self.push_cur_frag(ir::Statement::SaveFrame {
                 size: self.frame_offset - 1,
             });
 
@@ -557,7 +557,7 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                 if !args.is_empty() {
                     panic!("`{name}` does not take any arguments");
                 }
-                self.push_cur_frag(ir::Instruction::Input {
+                self.push_cur_frag(ir::Statement::Input {
                     dst: ir::Place::Direct(ir::DirectPlace::StackFrame {
                         offset: self.frame_offset,
                     }),
@@ -643,7 +643,7 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                         _ => c,
                     };
                     for byte in c.encode_utf8(&mut [0; 4]).bytes() {
-                        self.push_cur_frag(ir::Instruction::Output {
+                        self.push_cur_frag(ir::Statement::Output {
                             src: ir::Value::Immediate(byte as usize),
                         });
                     }
@@ -658,7 +658,7 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                     self.compile_macro_call("print", args)
                         .expect_ty(&Type::unit(), name);
                 }
-                self.push_cur_frag(ir::Instruction::Output {
+                self.push_cur_frag(ir::Statement::Output {
                     src: ir::Value::Immediate(b'\n' as usize),
                 });
                 Typed::new(stack_value_at(orig_frame_offset), Type::unit())
@@ -667,7 +667,7 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                 if !args.is_empty() {
                     panic!("`{name}` does not take any arguments");
                 }
-                self.extend_cur_frag(goto(EXIT_FRAG, self.frame_call_offset));
+                self.extend_cur_frag(jump(EXIT_FRAG, self.frame_call_offset));
                 self.cur_frag = EXIT_FRAG;
                 Typed::new(stack_value_at(orig_frame_offset), Type::unit())
             }
@@ -772,29 +772,29 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                         offset: rhs_base + offset,
                     });
                     eq_test = vec![
-                        ir::Instruction::While {
+                        ir::Statement::While {
                             cond: lhs,
                             body: vec![
-                                ir::Instruction::StoreImm {
+                                ir::Statement::StoreImm {
                                     dst: lhs,
                                     value: 1,
                                     store_mode: ir::StoreMode::Subtract,
                                 },
-                                ir::Instruction::Switch {
+                                ir::Statement::Switch {
                                     cond: rhs,
                                     cases: vec![vec![
-                                        ir::Instruction::StoreImm {
+                                        ir::Statement::StoreImm {
                                             dst: lhs,
                                             value: 0,
                                             store_mode: ir::StoreMode::Replace,
                                         },
-                                        ir::Instruction::StoreImm {
+                                        ir::Statement::StoreImm {
                                             dst: rhs,
                                             value: 1,
                                             store_mode: ir::StoreMode::Add,
                                         },
                                     ]],
-                                    default: vec![ir::Instruction::StoreImm {
+                                    default: vec![ir::Statement::StoreImm {
                                         dst: rhs,
                                         value: 1,
                                         store_mode: ir::StoreMode::Subtract,
@@ -802,10 +802,10 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                                 },
                             ],
                         },
-                        ir::Instruction::Switch {
+                        ir::Statement::Switch {
                             cond: rhs,
                             cases: vec![eq_test],
-                            default: vec![ir::Instruction::StoreImm {
+                            default: vec![ir::Statement::StoreImm {
                                 dst: ret.value,
                                 value: 1,
                                 store_mode: ret_modify,
@@ -833,16 +833,16 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                     _ => unreachable!("the only short-circuiting operators are `&&` and `||`"),
                 };
 
-                self.push_cur_frag(ir::Instruction::Switch {
+                self.push_cur_frag(ir::Statement::Switch {
                     cond: ir::Place::Direct(lhs),
-                    cases: vec![goto(false_circuit, self.frame_call_offset).to_vec()],
-                    default: goto(true_circuit, self.frame_call_offset).to_vec(),
+                    cases: vec![jump(false_circuit, self.frame_call_offset).to_vec()],
+                    default: jump(true_circuit, self.frame_call_offset).to_vec(),
                 });
 
                 self.cur_frag = long_circuit;
                 self.frame_offset -= 1;
                 self.compile_expr_and_push(rhs).expect_ty(&Type::Bool, name);
-                self.extend_cur_frag(goto(short_circuit, self.frame_call_offset));
+                self.extend_cur_frag(jump(short_circuit, self.frame_call_offset));
 
                 self.cur_frag = short_circuit;
 
@@ -874,15 +874,6 @@ impl<'a, 'src> FuncContext<'a, 'src> {
             );
         }
 
-        // stack layout: [..., return value, return frag id, call frag id, arguments, locals]
-        // frame timeline:
-        // 1. caller:     ^^^^^^^^^^^^^^^^^
-        // 2. call:                                          ^^^^^^^^^^^^^^^^^^^^^^^
-        // 3. callee:          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        // 4. goto:                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        // 5. return:                        ^^^^^^^^^^^^^^
-        // 6. returned:   ^^^^^^^^^^^^^^^^^
-
         let orig_frame_offset = self.frame_offset;
 
         // leave space for the return value
@@ -890,7 +881,7 @@ impl<'a, 'src> FuncContext<'a, 'src> {
         self.frame_offset += ret_size;
 
         // the return frag will restore everything up to this point
-        let return_frag = self.global.add_frag(vec![ir::Instruction::RestoreFrame {
+        let return_frag = self.global.add_frag(vec![ir::Statement::RestoreFrame {
             size: self.frame_offset,
         }]);
 
@@ -908,7 +899,7 @@ impl<'a, 'src> FuncContext<'a, 'src> {
         }
 
         // make the call
-        self.push_cur_frag(ir::Instruction::SaveFrame {
+        self.push_cur_frag(ir::Statement::SaveFrame {
             size: orig_frame_offset + ret_size + 1,
         });
 
@@ -1082,7 +1073,7 @@ impl<'a, 'src> FuncContext<'a, 'src> {
             }
             ir::Place::Direct(ir::DirectPlace::Address(address)) => *address += 2 * amount,
             ir::Place::Indirect(ir::IndirectPlace::Deref { address }) => {
-                self.push_cur_frag(ir::Instruction::StoreImm {
+                self.push_cur_frag(ir::Statement::StoreImm {
                     dst: ir::Place::Direct(*address),
                     value: 2 * amount,
                     store_mode: ir::StoreMode::Add,
@@ -1099,11 +1090,11 @@ impl<'a, 'src> FuncContext<'a, 'src> {
             offset: new_frame_offset,
         };
         self.extend_cur_frag([
-            ir::Instruction::Load {
+            ir::Statement::Load {
                 src: ir::Place::Direct(*address),
                 multiplier: 1,
             },
-            ir::Instruction::Store {
+            ir::Statement::Store {
                 dst: ir::Place::Direct(owned_address),
                 store_mode: ir::StoreMode::Replace,
             },
@@ -1225,10 +1216,10 @@ impl<'a, 'src> FuncContext<'a, 'src> {
             offset: self.frame_offset,
         };
         self.extend_cur_frag([
-            ir::Instruction::LoadRef {
+            ir::Statement::LoadRef {
                 src: base.value.place,
             },
-            ir::Instruction::Store {
+            ir::Statement::Store {
                 dst: ir::Place::Direct(address),
                 store_mode: ir::StoreMode::Replace,
             },
@@ -1280,10 +1271,10 @@ impl<'a, 'src> FuncContext<'a, 'src> {
             );
         }
         self.extend_cur_frag([
-            ir::Instruction::LoadRef {
+            ir::Statement::LoadRef {
                 src: place.value.place,
             },
-            ir::Instruction::Store {
+            ir::Statement::Store {
                 dst: ir::Place::Direct(ir::DirectPlace::StackFrame {
                     offset: self.frame_offset,
                 }),
@@ -1304,7 +1295,7 @@ impl<'a, 'src> FuncContext<'a, 'src> {
         Typed::new(
             ir::Value::Immediate(*self.global.str_ids.entry(s).or_insert_with(|| {
                 self.global.frags.push(
-                    [ir::Instruction::RestoreFrame { size: 1 }]
+                    [ir::Statement::RestoreFrame { size: 1 }]
                         .into_iter()
                         .chain(compile_print_str_literal(s))
                         .collect(),
@@ -1390,8 +1381,8 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                 self.own_place(&mut src, self.frame_offset + size + 1);
                 for _ in 0..size {
                     self.extend_cur_frag([
-                        ir::Instruction::Load { src, multiplier: 1 },
-                        ir::Instruction::Store { dst, store_mode },
+                        ir::Statement::Load { src, multiplier: 1 },
+                        ir::Statement::Store { dst, store_mode },
                     ]);
                     self.increment_place(&mut dst, 1);
                     self.increment_place(&mut src, 1);
@@ -1473,8 +1464,8 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                 });
                 let loop_body = self.create_block(body);
                 assert!(loop_start == loop_body.start);
-                self.extend_cur_frag(goto(loop_start, self.frame_call_offset));
-                self.extend_frag(loop_body.end, goto(loop_start, self.frame_call_offset));
+                self.extend_cur_frag(jump(loop_start, self.frame_call_offset));
+                self.extend_frag(loop_body.end, jump(loop_start, self.frame_call_offset));
                 self.loop_stack.pop();
                 self.cur_frag = after_loop;
             }
@@ -1482,14 +1473,14 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                 let Some(&FragPair { start, .. }) = self.loop_stack.last() else {
                     panic!("`continue` may only be used inside a loop");
                 };
-                self.extend_cur_frag(goto(start, self.frame_call_offset));
+                self.extend_cur_frag(jump(start, self.frame_call_offset));
                 self.cur_frag = EXIT_FRAG;
             }
             ast::Statement::Break => {
                 let Some(&FragPair { end, .. }) = self.loop_stack.last() else {
                     panic!("`break` may only be used inside a loop");
                 };
-                self.extend_cur_frag(goto(end, self.frame_call_offset));
+                self.extend_cur_frag(jump(end, self.frame_call_offset));
                 self.cur_frag = EXIT_FRAG;
             }
             ast::Statement::If {
@@ -1504,15 +1495,15 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                     let true_block = self.create_block(true_branch);
                     let false_block = self.create_block(false_branch);
 
-                    self.push_cur_frag(ir::Instruction::Switch {
+                    self.push_cur_frag(ir::Statement::Switch {
                         cond: place,
-                        cases: vec![goto(false_block.start, self.frame_call_offset).to_vec()],
-                        default: goto(true_block.start, self.frame_call_offset).to_vec(),
+                        cases: vec![jump(false_block.start, self.frame_call_offset).to_vec()],
+                        default: jump(true_block.start, self.frame_call_offset).to_vec(),
                     });
 
                     self.cur_frag = self.new_frag();
                     for block in [true_block, false_block] {
-                        self.extend_frag(block.end, goto(self.cur_frag, self.frame_call_offset));
+                        self.extend_frag(block.end, jump(self.cur_frag, self.frame_call_offset));
                     }
                 }
                 ir::Value::Immediate(value) => self.compile_block(if value == 0 {
@@ -1563,19 +1554,19 @@ impl<'a, 'src> FuncContext<'a, 'src> {
                             })
                             .collect::<Vec<_>>();
                         let default_block = self.create_block(default_body);
-                        self.push_cur_frag(ir::Instruction::Switch {
+                        self.push_cur_frag(ir::Statement::Switch {
                             cond: place,
                             cases: arm_blocks
                                 .iter()
-                                .map(|block| goto(block.start, self.frame_call_offset).to_vec())
+                                .map(|block| jump(block.start, self.frame_call_offset).to_vec())
                                 .collect(),
-                            default: goto(default_block.start, self.frame_call_offset).to_vec(),
+                            default: jump(default_block.start, self.frame_call_offset).to_vec(),
                         });
                         self.cur_frag = self.new_frag();
                         for block in arm_blocks.into_iter().chain([default_block]) {
                             self.extend_frag(
                                 block.end,
-                                goto(self.cur_frag, self.frame_call_offset),
+                                jump(self.cur_frag, self.frame_call_offset),
                             );
                         }
                     }
@@ -1710,21 +1701,21 @@ pub(super) fn lower(ast: &ast::Ast) -> ir::Program {
     context.frags[EXIT_FRAG].clear(); // will never be executed
 
     ir::Program {
-        instructions: vec![
-            ir::Instruction::StoreImm {
+        statements: vec![
+            ir::Statement::StoreImm {
                 dst: ir::Place::Direct(ir::DirectPlace::Address(0)),
-                value: 2, // next free address (for boxed values)
+                value: 2, // next free heap address
                 store_mode: ir::StoreMode::Add,
             },
-            ir::Instruction::SaveFrame { size: 1 },
-            ir::Instruction::StoreImm {
+            ir::Statement::SaveFrame { size: 1 },
+            ir::Statement::StoreImm {
                 dst: ir::Place::Direct(ir::DirectPlace::StackFrame { offset: 0 }),
                 value: main_func_id,
                 store_mode: ir::StoreMode::Add,
             },
-            ir::Instruction::While {
+            ir::Statement::While {
                 cond: ir::Place::Direct(ir::DirectPlace::StackFrame { offset: 0 }),
-                body: vec![ir::Instruction::Switch {
+                body: vec![ir::Statement::Switch {
                     cond: ir::Place::Direct(ir::DirectPlace::StackFrame { offset: 0 }),
                     cases: context.frags,
                     default: vec![], // should never be executed

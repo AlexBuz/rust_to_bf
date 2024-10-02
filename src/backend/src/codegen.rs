@@ -1,5 +1,8 @@
 use {
-    super::bf::{self, Instruction::*},
+    super::bf::{
+        self,
+        Instruction::{self, *},
+    },
     middle::ir,
     std::iter::repeat,
     velcro::{iter, vec},
@@ -20,23 +23,23 @@ memory layout: [
 */
 
 struct PlacePath {
-    to: Vec<bf::Instruction>,
-    from: Vec<bf::Instruction>,
+    to: Vec<Instruction>,
+    from: Vec<Instruction>,
 }
 
 trait BfPlace {
     fn path(&self) -> PlacePath;
 
-    fn emit_load(&self, output: &mut Vec<bf::Instruction>, multiplier: usize);
+    fn emit_load(&self, output: &mut Vec<Instruction>, multiplier: usize);
 
-    fn emit_store(&self, output: &mut Vec<bf::Instruction>, mode: ir::StoreMode);
+    fn emit_store(&self, output: &mut Vec<Instruction>, mode: ir::StoreMode);
 
-    fn emit_load_ref(&self, output: &mut Vec<bf::Instruction>);
+    fn emit_load_ref(&self, output: &mut Vec<Instruction>);
 
     fn emit_bf(
         &self,
-        output: &mut Vec<bf::Instruction>,
-        instructions: impl IntoIterator<Item = bf::Instruction>,
+        output: &mut Vec<Instruction>,
+        instructions: impl IntoIterator<Item = Instruction>,
     ) {
         let path = self.path();
         output.extend(path.to);
@@ -59,7 +62,7 @@ impl BfPlace for ir::DirectPlace {
         }
     }
 
-    fn emit_load(&self, output: &mut Vec<bf::Instruction>, multiplier: usize) {
+    fn emit_load(&self, output: &mut Vec<Instruction>, multiplier: usize) {
         let path = self.path();
 
         // go to the source cell
@@ -89,7 +92,7 @@ impl BfPlace for ir::DirectPlace {
         output.extend(path.from);
     }
 
-    fn emit_store(&self, output: &mut Vec<bf::Instruction>, mode: ir::StoreMode) {
+    fn emit_store(&self, output: &mut Vec<Instruction>, mode: ir::StoreMode) {
         let path = self.path();
 
         let operator = match mode {
@@ -122,7 +125,7 @@ impl BfPlace for ir::DirectPlace {
         output.push(Right(2));
     }
 
-    fn emit_load_ref(&self, output: &mut Vec<bf::Instruction>) {
+    fn emit_load_ref(&self, output: &mut Vec<Instruction>) {
         match *self {
             ir::DirectPlace::StackFrame { offset } => {
                 // leave a trail of mem markers up to the frame base
@@ -193,7 +196,7 @@ impl BfPlace for ir::IndirectPlace {
         }
     }
 
-    fn emit_load(&self, output: &mut Vec<bf::Instruction>, multiplier: usize) {
+    fn emit_load(&self, output: &mut Vec<Instruction>, multiplier: usize) {
         match self {
             ir::IndirectPlace::Deref { .. } => {
                 let path = self.path();
@@ -228,7 +231,7 @@ impl BfPlace for ir::IndirectPlace {
         }
     }
 
-    fn emit_store(&self, output: &mut Vec<bf::Instruction>, mode: ir::StoreMode) {
+    fn emit_store(&self, output: &mut Vec<Instruction>, mode: ir::StoreMode) {
         match self {
             ir::IndirectPlace::Deref { .. } => {
                 // move the value from reg0 to reg1 so that reg0 can be used to store the address
@@ -272,7 +275,7 @@ impl BfPlace for ir::IndirectPlace {
         }
     }
 
-    fn emit_load_ref(&self, output: &mut Vec<bf::Instruction>) {
+    fn emit_load_ref(&self, output: &mut Vec<Instruction>) {
         match *self {
             ir::IndirectPlace::Deref { address } => address.emit_load(output, 1),
         }
@@ -287,21 +290,21 @@ impl BfPlace for ir::Place {
         }
     }
 
-    fn emit_load(&self, output: &mut Vec<bf::Instruction>, multiplier: usize) {
+    fn emit_load(&self, output: &mut Vec<Instruction>, multiplier: usize) {
         match self {
             ir::Place::Direct(place) => place.emit_load(output, multiplier),
             ir::Place::Indirect(place) => place.emit_load(output, multiplier),
         }
     }
 
-    fn emit_store(&self, output: &mut Vec<bf::Instruction>, mode: ir::StoreMode) {
+    fn emit_store(&self, output: &mut Vec<Instruction>, mode: ir::StoreMode) {
         match self {
             ir::Place::Direct(place) => place.emit_store(output, mode),
             ir::Place::Indirect(place) => place.emit_store(output, mode),
         }
     }
 
-    fn emit_load_ref(&self, output: &mut Vec<bf::Instruction>) {
+    fn emit_load_ref(&self, output: &mut Vec<Instruction>) {
         match *self {
             ir::Place::Direct(place) => place.emit_load_ref(output),
             ir::Place::Indirect(place) => place.emit_load_ref(output),
@@ -309,25 +312,25 @@ impl BfPlace for ir::Place {
     }
 }
 
-fn compile_instructions(
-    mut before: Vec<bf::Instruction>,
-    instructions: &[ir::Instruction],
-    after: impl IntoIterator<Item = bf::Instruction>,
-) -> Vec<bf::Instruction> {
-    for instruction in instructions {
-        compile_instruction(instruction, &mut before);
+fn compile_statements(
+    mut before: Vec<Instruction>,
+    statements: &[ir::Statement],
+    after: impl IntoIterator<Item = Instruction>,
+) -> Vec<Instruction> {
+    for statement in statements {
+        compile_statement(statement, &mut before);
     }
     before.extend(after);
     before
 }
 
-fn compile_instruction(instruction: &ir::Instruction, output: &mut Vec<bf::Instruction>) {
-    // pointer should be at the stack base before and after each instruction
-    match *instruction {
-        ir::Instruction::Load { src, multiplier } => src.emit_load(output, multiplier),
-        ir::Instruction::LoadRef { src } => src.emit_load_ref(output),
-        ir::Instruction::Store { dst, store_mode } => dst.emit_store(output, store_mode),
-        ir::Instruction::StoreImm {
+fn compile_statement(statement: &ir::Statement, output: &mut Vec<Instruction>) {
+    // BF data pointer should be at the stack base before and after each statement is executed
+    match *statement {
+        ir::Statement::Load { src, multiplier } => src.emit_load(output, multiplier),
+        ir::Statement::LoadRef { src } => src.emit_load_ref(output),
+        ir::Statement::Store { dst, store_mode } => dst.emit_store(output, store_mode),
+        ir::Statement::StoreImm {
             dst,
             value,
             store_mode,
@@ -338,7 +341,7 @@ fn compile_instruction(instruction: &ir::Instruction, output: &mut Vec<bf::Instr
                 dst.emit_bf(output, iter![Loop(vec![Sub(1)]), Add(value as _)])
             }
         },
-        ir::Instruction::SaveFrame { size } => {
+        ir::Statement::SaveFrame { size } => {
             if size > 0 {
                 output.extend(iter![
                     Right(8),
@@ -349,7 +352,7 @@ fn compile_instruction(instruction: &ir::Instruction, output: &mut Vec<bf::Instr
                 ]);
             }
         }
-        ir::Instruction::RestoreFrame { size } => {
+        ir::Statement::RestoreFrame { size } => {
             if size > 0 {
                 output.extend(iter![
                     Right(8),
@@ -360,11 +363,11 @@ fn compile_instruction(instruction: &ir::Instruction, output: &mut Vec<bf::Instr
                 ]);
             }
         }
-        ir::Instruction::While { cond, ref body } => {
+        ir::Statement::While { cond, ref body } => {
             let path = cond.path();
             output.extend(iter![
                 ..path.to.iter().cloned(),
-                Loop(compile_instructions(
+                Loop(compile_statements(
                     path.from.clone(),
                     body,
                     path.to.iter().cloned(),
@@ -372,14 +375,14 @@ fn compile_instruction(instruction: &ir::Instruction, output: &mut Vec<bf::Instr
                 ..path.from,
             ]);
         }
-        ir::Instruction::Switch {
+        ir::Statement::Switch {
             cond,
             ref cases,
             ref default,
         } => {
             if cases.is_empty() {
-                for instruction in default {
-                    compile_instruction(instruction, output);
+                for statement in default {
+                    compile_statement(statement, output);
                 }
             } else {
                 cond.emit_load(output, 1);
@@ -396,7 +399,7 @@ fn compile_instruction(instruction: &ir::Instruction, output: &mut Vec<bf::Instr
                         ]
                     ]>>
                     */
-                    let mut body = compile_instructions(
+                    let mut body = compile_statements(
                         vec![Loop(vec![Sub(1)]), Right(2)],
                         default,
                         iter![Left(2)],
@@ -417,7 +420,7 @@ fn compile_instruction(instruction: &ir::Instruction, output: &mut Vec<bf::Instr
                     ]<[->>> case 0 <<<]>
                     >>
                     */
-                    let mut body = compile_instructions(
+                    let mut body = compile_statements(
                         vec![Loop(vec![Sub(1)]), Left(1), Sub(1), Right(3)],
                         default,
                         iter![Left(2)],
@@ -427,7 +430,7 @@ fn compile_instruction(instruction: &ir::Instruction, output: &mut Vec<bf::Instr
                             Sub(1),
                             Loop(body),
                             Left(1),
-                            Loop(compile_instructions(
+                            Loop(compile_statements(
                                 vec![Sub(1), Right(3)],
                                 case,
                                 iter![Left(3)],
@@ -445,8 +448,8 @@ fn compile_instruction(instruction: &ir::Instruction, output: &mut Vec<bf::Instr
                 }
             }
         }
-        ir::Instruction::Input { dst } => dst.emit_bf(output, iter![Input]),
-        ir::Instruction::Output { src } => match src {
+        ir::Statement::Input { dst } => dst.emit_bf(output, iter![Input]),
+        ir::Statement::Output { src } => match src {
             ir::Value::Immediate(value) => {
                 // put the value in reg0, print it, clear reg0, and go back to the stack base
                 output.extend(iter![
@@ -464,9 +467,9 @@ fn compile_instruction(instruction: &ir::Instruction, output: &mut Vec<bf::Instr
 
 pub(super) fn compile(program: &ir::Program) -> bf::Program {
     bf::Program {
-        instructions: compile_instructions(
+        instructions: compile_statements(
             vec![Right(3)], // start at the stack base
-            &program.instructions,
+            &program.statements,
             [],
         ),
     }

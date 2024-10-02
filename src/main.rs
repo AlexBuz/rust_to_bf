@@ -40,16 +40,16 @@ struct CompileOptions {
 }
 
 #[derive(ValueEnum, Clone, Debug)]
-enum Stage {
+enum Interpreter {
     Ir,
     Bf,
 }
 
 #[derive(Debug, Parser)]
 struct RunOptions {
-    /// Compilation stage to run
+    /// Interpreter to use
     #[arg(long, default_value = "ir")]
-    stage: Stage,
+    interpreter: Interpreter,
 
     /// Print the final memory state after execution
     #[arg(long)]
@@ -82,9 +82,9 @@ fn main() -> anyhow::Result<()> {
     if let Some(run_options) = run_options {
         let stdin = &mut std::io::stdin().lock();
         let stdout = &mut std::io::stdout().lock();
-        let final_state = match run_options.stage {
-            Stage::Ir => ir_program.execute(stdin, stdout),
-            Stage::Bf => bf_program.execute(stdin, stdout),
+        let final_state = match run_options.interpreter {
+            Interpreter::Ir => ir_program.execute(stdin, stdout),
+            Interpreter::Bf => bf_program.execute(stdin, stdout),
         };
         if run_options.print_memory {
             println!("{final_state:?}");

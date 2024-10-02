@@ -102,7 +102,7 @@ pub enum StoreMode {
 
 #[allow(unused)]
 #[derive(Debug, Clone)]
-pub enum Instruction {
+pub enum Statement {
     Load {
         src: Place,
         multiplier: usize,
@@ -127,12 +127,12 @@ pub enum Instruction {
     },
     While {
         cond: Place,
-        body: Vec<Instruction>,
+        body: Vec<Statement>,
     },
     Switch {
         cond: Place,
-        cases: Vec<Vec<Instruction>>, // item at index n is the body for case n
-        default: Vec<Instruction>,
+        cases: Vec<Vec<Statement>>, // item at index n is the body for case n
+        default: Vec<Statement>,
     },
     Input {
         dst: Place,
@@ -142,15 +142,15 @@ pub enum Instruction {
     },
 }
 
-impl Instruction {
+impl Statement {
     pub fn execute(&self, state: &mut MemoryState, stdin: &mut impl Read, stdout: &mut impl Write) {
         match *self {
-            Instruction::Load {
+            Statement::Load {
                 ref src,
                 multiplier,
             } => state.reg += multiplier * *src.resolve(state),
-            Instruction::LoadRef { ref src } => state.reg += src.resolve_ref(state),
-            Instruction::Store { dst, store_mode } => {
+            Statement::LoadRef { ref src } => state.reg += src.resolve_ref(state),
+            Statement::Store { dst, store_mode } => {
                 let reg = std::mem::take(&mut state.reg);
                 let place = dst.resolve(state);
                 match store_mode {
@@ -159,7 +159,7 @@ impl Instruction {
                     StoreMode::Subtract => *place = place.wrapping_sub(reg),
                 }
             }
-            Instruction::StoreImm {
+            Statement::StoreImm {
                 dst,
                 value,
                 store_mode,
@@ -171,21 +171,21 @@ impl Instruction {
                     StoreMode::Subtract => *place = place.wrapping_sub(value),
                 }
             }
-            Instruction::SaveFrame { size } => {
+            Statement::SaveFrame { size } => {
                 state.frame_base += size;
                 if state.stack.len() < state.frame_base {
                     state.stack.resize(state.frame_base, 0);
                 }
             }
-            Instruction::RestoreFrame { size } => state.frame_base -= size,
-            Instruction::While { ref cond, ref body } => {
+            Statement::RestoreFrame { size } => state.frame_base -= size,
+            Statement::While { ref cond, ref body } => {
                 while *cond.resolve(state) != 0 {
-                    for instruction in body {
-                        instruction.execute(state, stdin, stdout);
+                    for statement in body {
+                        statement.execute(state, stdin, stdout);
                     }
                 }
             }
-            Instruction::Switch {
+            Statement::Switch {
                 ref cond,
                 ref cases,
                 ref default,
@@ -193,8 +193,8 @@ impl Instruction {
                 .get(*cond.resolve(state))
                 .unwrap_or(default)
                 .iter()
-                .for_each(|instruction| instruction.execute(state, stdin, stdout)),
-            Instruction::Input { dst } => {
+                .for_each(|statement| statement.execute(state, stdin, stdout)),
+            Statement::Input { dst } => {
                 let mut buf = [0u8];
                 if let Err(e) = stdin.read_exact(&mut buf) {
                     let std::io::ErrorKind::UnexpectedEof = e.kind() else {
@@ -203,7 +203,7 @@ impl Instruction {
                 }
                 *dst.resolve(state) = usize::from(buf[0]);
             }
-            Instruction::Output { src } => {
+            Statement::Output { src } => {
                 stdout.write_all(&[src.resolve(state) as u8]).unwrap();
                 let _ = stdout.flush();
             }
@@ -213,7 +213,7 @@ impl Instruction {
 
 #[derive(Debug, Clone)]
 pub struct Program {
-    pub instructions: Vec<Instruction>,
+    pub statements: Vec<Statement>,
 }
 
 pub trait Execute {
@@ -228,8 +228,8 @@ impl Execute for Program {
             stack: vec![],
             heap: vec![],
         };
-        for instruction in &self.instructions {
-            instruction.execute(&mut state, stdin, stdout);
+        for statement in &self.statements {
+            statement.execute(&mut state, stdin, stdout);
         }
         state
     }
