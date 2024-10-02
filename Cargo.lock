@@ -99,19 +99,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bfvm"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "backend",
- "clap",
- "frontend",
- "middle",
- "rstest",
- "rstest_reuse",
-]
-
-[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -589,6 +576,19 @@ dependencies = [
  "quote",
  "rand",
  "syn 2.0.79",
+]
+
+[[package]]
+name = "rust_to_bf"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "backend",
+ "clap",
+ "frontend",
+ "middle",
+ "rstest",
+ "rstest_reuse",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 [package]
-name = "bfvm"
+name = "rust_to_bf"
 version.workspace = true
 edition.workspace = true
 
